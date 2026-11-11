@@ -227,8 +227,12 @@ export class GroqProvider implements Provider {
     if (err.status === 401) return "GROQ_API_KEY was rejected (invalid key).";
     if (err.status === 413) return "Request too large for this Groq key's tokens-per-minute limit. Try a shorter question or a new chat.";
     if (err.status === 429) {
-      const wait = err.headers?.get?.("retry-after");
-      return `Rate limited by Groq${wait ? `; retry in ~${wait}s` : ""}. Free-tier keys have low per-minute token limits.`;
+      const wait = Number(err.headers?.get?.("retry-after") ?? NaN);
+      if (wait > 90) {
+        // Long waits mean the token budget for a longer window (e.g. daily) is spent, not the per-minute one.
+        return `Rate limited by Groq: this key's token budget is used up for now; it frees up in ~${Math.ceil(wait / 60)} min. A paid Groq plan raises the limits.`;
+      }
+      return `Rate limited by Groq${wait ? `; retry in ~${Math.ceil(wait)}s` : ""} (free-tier keys allow ~8K tokens/min).`;
     }
     return `Groq API error ${err.status ?? ""}: ${err.message}`;
   }

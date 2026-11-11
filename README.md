@@ -18,7 +18,7 @@ Requires Node 20.12+. You need one key from either provider:
 
 | Provider | Key | Chat model + search | Notes |
 |---|---|---|---|
-| **Groq** (default when its key is set) | `GROQ_API_KEY` from https://console.groq.com/keys | `openai/gpt-oss-120b` + built-in `browser_search` | Works on a free key. The free tier allows 8K tokens/min, so big multi-product questions can hit the limit; wait a minute and retry. |
+| **Groq** (default when its key is set) | `GROQ_API_KEY` from https://console.groq.com/keys | `openai/gpt-oss-120b` + built-in `browser_search` | Works on a free key, but the free tier is tight: about 8K tokens/min plus a larger token budget over longer windows. A few heavy multi-product questions (or one `npm run eval`) can use it up for a while. A paid Groq plan removes the problem. |
 | **Google Gemini** | `GEMINI_API_KEY` from https://aistudio.google.com/apikey | `gemini-3.8-flash` + Google Search grounding | Search grounding needs billing enabled on the key's project. |
 
 Optional:

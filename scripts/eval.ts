@@ -236,6 +236,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function run(s: Scenario): Promise<Run> {
   const r = await runOnce(s);
   if (!/rate limit/i.test(r.error ?? "")) return r;
+  if (/used up/i.test(r.error ?? "")) {
+    // A long budget window is spent: every later scenario would fail too, so stop instead of recording noise.
+    console.log(`\n✖ ${r.error}\nStopping the eval: results now would only measure the rate limit. Re-run later.`);
+    process.exit(2);
+  }
   console.log("  (rate limited; waiting 65s and retrying)");
   await sleep(65_000);
   return runOnce(s);
