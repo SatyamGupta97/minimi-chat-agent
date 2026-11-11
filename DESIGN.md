@@ -1,53 +1,51 @@
 # Design
 
-**A research agent whose only tool is web search, with temporal memory that the app looks up deterministically, facts extracted asynchronously, and per-claim comparison against the past. It runs on Claude, Gemini or Groq (each with its built-in web search), picked from whichever key is pasted, behind one small adapter.**
+**A research agent whose only tool is web search, with memory across chats that the app manages: a self-correcting user profile, retrieval of past chats by meaning, keywords or exact dates, and per-claim comparison against the past. Any one OpenAI, Gemini, Claude or Groq key works; the vendor sits behind a small adapter.**
 
 ## How it works
 
 ```
 POST /api/chat (SSE) → Agent.runTurn
   1. save the question (memory even if the answer fails)
-  2. memory in code: profile + recent exchanges from other chats, always; if the message refers
-     to our past, resolve date phrases to exact local ranges (every reading if ambiguous) and
-     look those days up; otherwise pull in related past exchanges by topic
-  3. one streamed model call: earlier turns + context (clock, calendar, past-chat index,
-     recalled exchanges fenced as untrusted data) + message; its only tool is web search
-  4. the adapter maps vendor citations to stable [n]; save the answer with status,
-     replyTo, cited sources apart from pages only read
-  5. background: extract {title, entities, user decisions, facts about the user, checkable facts}; retried after restarts
+  2. memory, in code: profile + latest exchanges from other chats; if the message points at the past,
+     resolve its date phrases to exact local ranges and look those days up; otherwise retrieve related
+     past chats by meaning (embedding) and keywords
+  3. one streamed model call with all of that fenced as untrusted data; its only tool is web search
+  4. the adapter maps vendor citations to stable [n]; save answer, status, replyTo, cited sources
+  5. background: extract {entities, decisions, facts, statements about the user}; reconcile the profile;
+     embed the exchange
 ```
 
 ## Why
 
 **The hard part of the test set is memory plus time, not search.** "What did I ask on 3 November? Is it still right?" means resolving a date in the user's timezone, finding what was said, and re-checking each claim.
 
-- **Memory is the app's job, not a second tool.** The brief allows one tool. Code resolves "last Tuesday" (both readings when ambiguous), "3 November" or "the week before last" in the user's timezone, then retrieves with a hard date filter plus BM25 ranking over questions, entities, decisions and facts. Lookups run only when the message refers to our past, so "weather on Monday" and "Monday.com" don't trigger one. This saves a model round trip, and an empty lookup still reports what memory holds, so nothing is invented.
-- **Memory works across chats, within a budget.** Every message carries four layers:
-  1. a profile of facts the user stated about themselves;
-  2. the latest exchanges from their other chats;
-  3. past exchanges that share a meaningful word with the message, matched automatically ("pack for my trip" brings back the Goa plan);
-  4. an exact date lookup when they point at the past.
+- **Memory is the app's job, not a second tool.** The brief allows one tool. Code resolves "last Tuesday" (both readings when ambiguous), "3 November" or "the week before last", and retrieves before the model runs, saving a round trip. Date lookups only fire when the message refers to our past, so "weather on Monday" and "Monday.com" don't trigger one. An empty lookup still reports what memory holds, so nothing is invented.
+- **Memory works across chats, within a budget.** Every message carries:
+  - the profile;
+  - the latest exchanges from other chats;
+  - related past chats, matched by meaning **or** keywords (hybrid: embeddings catch paraphrases, keywords catch exact product names);
+  - any date lookup.
 
-  Sending all history every turn would blow token budgets and dilute attention.
-- **Recalled memory is untrusted.** Past messages are user-written, and past answers were shaped by web pages. They are fenced (with `<` escaped), and the prompt treats them as data to report, never instructions to follow.
-- **Prove change, don't narrate it.** "Has pricing changed?" becomes a per-claim diff: the stored value against a value cited today. No change is claimed without both sides; a missing baseline is "unknown". An extracted fact keeps a source only if that source's `[n]` sits next to the fact.
-- **Only finished answers are evidence.** Turns are `completed | incomplete | failed | cancelled`. Only an explicit vendor "stop" counts as completed, and only completed answers become baselines. Answers link to questions by `replyTo`, not position.
-- **Fast.** One model call, with search on the vendor's side and memory in the request. On Groq the first token arrives in under a second, and searched answers take 8–25 s. Extraction runs after the reply.
-- **Vendor-neutral.** SDKs are imported only in `src/providers/` (one streamed answer, one JSON call, error text). Adapters map citation formats onto the same records, e.g. Groq `【cursor†Lx-Ly】` → the exact search result behind those lines.
+  Sending all history would blow token budgets and dilute attention.
+- **The profile corrects itself.** New statements about the user are reconciled against existing facts in one small JSON call: add, update ("moved to Pune" replaces "lives in Delhi"), delete ("forget my budget") or ignore. Facts don't pile up into contradictions. If that call fails, the fallback adds only genuinely new facts.
+- **Prove change, don't narrate it.** "Has pricing changed?" becomes a per-claim diff: the stored value against a value cited today. No change is claimed without both sides; a missing baseline is "unknown". An extracted fact keeps a source only if that source's `[n]` sits next to it.
+- **Only finished answers are memory.** Turns are `completed | incomplete | failed | cancelled`; only an explicit vendor "stop" counts as completed. Answers link to questions by `replyTo`, not position.
+- **Recalled memory is untrusted.** Past messages are user-written, and past answers were shaped by web pages. They're fenced, with `<` escaped, and treated as data, never instructions.
+- **Vendor-neutral.** SDKs are imported only in `src/providers/`: one streamed answer, one JSON call, optional embeddings, error text. Vectors are tagged with their model and re-embedded after a vendor switch. Without an embedding API, memory falls back to keywords and nothing else changes.
 
 ## Considered and rejected
 
-- **Memory as a model-callable tool** (my first version): flexible, but a second tool and an extra round trip.
+- **Memory as a model-callable tool:** a second tool against the brief, and an extra round trip.
 - **Intent → plan → search → evaluate pipelines:** 3–5 serial calls before the first token.
-- **Postgres + pgvector, React:** they'd break "`npm install && npm run dev`" for one user, and embeddings don't solve the hard constraint, dates. Storage is an atomic JSON file (single process); a corrupt file stops startup instead of being reset.
-- **Backdated live answers as demo data:** that would file today's prices under last week's date. `npm run seed` writes labelled synthetic fixtures instead, idempotently.
+- **A vector database:** one user's few thousand exchanges fit in memory, and a cosine scan is microseconds. Storage is an atomic JSON file (single process); a corrupt file stops startup instead of being reset.
+- **Embeddings only:** they're weak on exact names and dates, so keywords and the date resolver stay.
+- **Backdated live answers as demo data:** `npm run seed` writes labelled synthetic fixtures instead.
 
 ## Evaluation
 
-Four levels, and only the last needs a paid key. `npm test` runs offline unit tests (date phrases and false positives, DST, lookup gating, recall, `replyTo`, migration, corrupt files, extraction recovery, both citation formats). `npm run eval` replays a recorded live run through the real app, so lookup, citation numbering, statuses and checks are re-tested free. `eval:local` runs the memory scenarios on a local Ollama model (it has no search, so search scenarios are skipped). `eval:live` re-records against the real model.
-
-Each eval scenario runs on fixture history. A judge turns each answer into per-claim records (`entity, historicalValue, currentValue, verdict, evidenceUrls`). The checks require proof: the old value matches memory, "changed" has two values plus evidence, an unknown baseline is explicit. Further scenarios cover exact date resolution, false premises, and recalled prompt injection.
+`npm test` runs offline: date phrases and false positives, DST, lookup gating, hybrid recall, profile reconciliation, key detection, migration, citation formats. `npm run eval` replays a recorded live run through the real app and refuses if the model's input changed. `eval:local` runs the memory scenarios on Ollama. `eval:live` re-records against a real model. Checks are per claim: the old value matches memory, "changed" has two values plus evidence, unknown baselines are explicit, recalled prompt injections are ignored.
 
 ## With another week
 
-Conflicting-source and release-date evals, with prompt and effort tuned on the scores; re-verifying stored facts in the background; checking claims against cited page text; embeddings alongside BM25 for paraphrases.
+Calibrate the similarity thresholds per embedding model on the eval; a memory page where the user can view and delete facts; summarise long chats before embedding; conflicting-source and release-date eval cases.
