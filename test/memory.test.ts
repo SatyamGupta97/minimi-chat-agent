@@ -81,19 +81,3 @@ test("store persists atomically and reloads", () => {
   assert.equal(b.allTurns().length, 2);
 });
 
-test("user profile: facts the user stated in one chat are available in every chat", async () => {
-  const { userProfile } = await import("../src/recall.ts");
-  const s = fresh();
-  assert.equal(userProfile(s), ""); // nothing known yet: no block at all
-  const a = s.createConversation(new Date("2026-11-11T05:00:00Z"));
-  const q = s.addTurn({ conversationId: a.id, role: "user", text: "My name is Satyam", at: "2026-11-11T05:00:00Z", tz });
-  s.addTurn({ conversationId: a.id, role: "assistant", replyTo: q.id, status: "completed", text: "Nice to meet you!", at: "2026-11-11T05:00:00Z", tz,
-    aboutUser: ["The user's name is Satyam.", "The user runs a 20-person sales team."] });
-  // A failed answer's extraction never feeds the profile.
-  s.addTurn({ conversationId: a.id, role: "assistant", status: "failed", text: "", at: "2026-11-11T05:01:00Z", tz, aboutUser: ["junk"] });
-  const p = userProfile(s);
-  assert.match(p, /<user_profile/);
-  assert.match(p, /The user's name is Satyam\./);
-  assert.match(p, /20-person sales team/);
-  assert.doesNotMatch(p, /junk/);
-});

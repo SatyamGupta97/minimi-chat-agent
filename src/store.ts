@@ -72,10 +72,27 @@ export interface Turn {
   decisions?: string[];
   /** Durable facts the user stated about themselves ("The user's name is Satyam."); feeds the cross-chat profile. */
   aboutUser?: string[];
+  /** Meaning vector of this exchange (assistant turns), tagged with the model that produced it. */
+  embedding?: { model: string; vector: number[] };
   /** Background fact extraction state; "pending" is retried on startup. */
   extraction?: "pending" | "done" | "failed";
   extractionAttempts?: number;
 }
+
+/** One durable fact about the user ("The user's name is Satyam."), kept current: updated or deleted, never duplicated. */
+export interface ProfileFact {
+  id: string;
+  text: string;
+  updatedAt: string;
+  /** The assistant turn whose extraction last set this fact. */
+  sourceTurnId?: string;
+}
+
+/** A change to the profile, decided by reconciling new statements against existing facts. */
+export type ProfileOp =
+  | { op: "add"; text: string }
+  | { op: "update"; id: string; text: string }
+  | { op: "delete"; id: string };
 
 export interface Conversation {
   id: string;
@@ -90,6 +107,8 @@ interface DB {
   version: typeof VERSION;
   conversations: Conversation[];
   turns: Turn[];
+  /** Absent in files written before the profile existed; built from turns on load. */
+  profile?: ProfileFact[];
 }
 
 /** The memory file exists but can't be read as memory. Never overwritten automatically. */
@@ -126,6 +145,45 @@ export class Store {
 
   constructor(private file: string) {
     this.db = Store.load(file);
+    this.db.profile ??= Store.profileFromTurns(this.db.turns);
+  }
+
+  /** One-time: seed the profile from facts earlier extractions stored on turns (exact duplicates merged). */
+  private static profileFromTurns(turns: Turn[]): ProfileFact[] {
+    const byText = new Map<string, ProfileFact>();
+    for (const t of turns) {
+      if (t.role !== "assistant" || t.status !== "completed") continue;
+      for (const f of t.aboutUser ?? []) {
+        const key = f.trim().toLowerCase();
+        byText.delete(key);
+        byText.set(key, { id: randomUUID(), text: f.trim(), updatedAt: t.at, sourceTurnId: t.id });
+      }
+    }
+    return [...byText.values()];
+  }
+
+  profileFacts(): readonly ProfileFact[] {
+    return this.db.profile ?? [];
+  }
+
+  /** Apply reconciled changes atomically; ids that don't exist are ignored. Returns how many changes applied. */
+  applyProfileOps(ops: ProfileOp[], at: string, sourceTurnId?: string): number {
+    const profile = (this.db.profile ??= []);
+    let applied = 0;
+    for (const o of ops) {
+      if (o.op === "add" && o.text.trim() && !profile.some((f) => f.text.toLowerCase() === o.text.trim().toLowerCase())) {
+        profile.push({ id: randomUUID(), text: o.text.trim(), updatedAt: at, sourceTurnId });
+        applied++;
+      } else if (o.op === "update") {
+        const f = profile.find((x) => x.id === o.id);
+        if (f && o.text.trim()) Object.assign(f, { text: o.text.trim(), updatedAt: at, sourceTurnId }), applied++;
+      } else if (o.op === "delete") {
+        const i = profile.findIndex((x) => x.id === o.id);
+        if (i >= 0) profile.splice(i, 1), applied++;
+      }
+    }
+    if (applied) this.save();
+    return applied;
   }
 
   /**
@@ -209,7 +267,7 @@ export class Store {
     return t;
   }
 
-  updateTurn(id: string, patch: Partial<Pick<Turn, "facts" | "entities" | "decisions" | "aboutUser" | "extraction" | "extractionAttempts">>): void {
+  updateTurn(id: string, patch: Partial<Pick<Turn, "facts" | "entities" | "decisions" | "aboutUser" | "embedding" | "extraction" | "extractionAttempts">>): void {
     const t = this.db.turns.find((x) => x.id === id);
     if (!t) return;
     Object.assign(t, patch);

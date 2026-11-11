@@ -2,6 +2,7 @@ import Groq from "groq-sdk";
 import type { ChatCompletionChunk, ChatCompletionMessageParam, ChatCompletionTool } from "groq-sdk/resources/chat/completions";
 import { z, type ZodType } from "zod";
 import type { Source } from "../store.ts";
+import { strictSchema } from "./schema.ts";
 import type { Citations, Provider, StepResult, StepSink, TurnSetup } from "./types.ts";
 
 // The API also sends `name` ("browser.search", "browser.open", ...); the SDK type omits it.
@@ -114,18 +115,6 @@ export class MarkerRewriter {
   }
 }
 
-/** Groq's strict structured outputs want every object closed and every property required. */
-function strictify(schema: unknown): unknown {
-  if (Array.isArray(schema)) return schema.map(strictify);
-  if (!schema || typeof schema !== "object") return schema;
-  const s: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(schema)) if (k !== "$schema") s[k] = strictify(v);
-  if (s.type === "object" && s.properties && typeof s.properties === "object") {
-    s.additionalProperties = false;
-    s.required = Object.keys(s.properties);
-  }
-  return s;
-}
 
 export class GroqProvider implements Provider {
   readonly name = "groq";
@@ -142,7 +131,7 @@ export class GroqProvider implements Provider {
   }
 
   missingConfig(): string | null {
-    return this.apiKey ? null : "No API key set. Put a Groq, Claude or Gemini key in .env as LLM_API_KEY.";
+    return this.apiKey ? null : "No API key set. Put an OpenAI, Gemini, Claude or Groq key in .env as LLM_API_KEY.";
   }
 
   async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {
@@ -209,7 +198,7 @@ export class GroqProvider implements Provider {
     const res = await this.client.chat.completions.create({
       model: opts?.strong ? this.chatModel : this.extractModel,
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_schema", json_schema: { name: "result", strict: true, schema: strictify(z.toJSONSchema(schema)) as Record<string, unknown> } },
+      response_format: { type: "json_schema", json_schema: { name: "result", strict: true, schema: strictSchema(z.toJSONSchema(schema)) } },
       reasoning_effort: "low",
     });
     return schema.parse(JSON.parse(res.choices[0]?.message.content ?? ""));

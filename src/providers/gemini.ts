@@ -63,6 +63,8 @@ function queriesOf(args: Record<string, unknown> | undefined): string[] {
 export class GeminiProvider implements Provider {
   readonly name = "gemini";
   readonly webSearch = true;
+  /** gemini-embedding-001 batches per item and takes query/document task types; 768 dims (normalized below). */
+  readonly embeddingModel = "gemini-embedding-001@768";
   private client: GoogleGenAI;
 
   constructor(
@@ -75,7 +77,7 @@ export class GeminiProvider implements Provider {
   }
 
   missingConfig(): string | null {
-    return this.apiKey ? null : "No API key set. Put a Groq, Claude or Gemini key in .env as LLM_API_KEY.";
+    return this.apiKey ? null : "No API key set. Put an OpenAI, Gemini, Claude or Groq key in .env as LLM_API_KEY.";
   }
 
   async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {
@@ -150,6 +152,16 @@ export class GeminiProvider implements Provider {
     return schema.parse(JSON.parse(res.text ?? ""));
   }
 
+  async embed(texts: string[], kind: "query" | "document"): Promise<number[][]> {
+    const res = await this.client.models.embedContent({
+      model: "gemini-embedding-001",
+      contents: texts,
+      config: { taskType: kind === "query" ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT", outputDimensionality: 768 },
+    });
+    // Below 3072 dimensions, gemini-embedding-001 vectors must be normalized by the caller.
+    return (res.embeddings ?? []).map((e) => normalize(e.values ?? []));
+  }
+
   describeError(err: unknown): string | undefined {
     if (!(err instanceof ApiError)) return undefined;
     if (err.status === 400 && /api key/i.test(err.message)) return "Your Gemini API key was rejected. Check the key in .env.";
@@ -160,4 +172,9 @@ export class GeminiProvider implements Provider {
     if (err.status === 429) return "Rate limited by the Gemini API. Try again in a moment.";
     return `Gemini API error ${err.status}: ${err.message}`;
   }
+}
+
+function normalize(v: number[]): number[] {
+  const n = Math.hypot(...v);
+  return n ? v.map((x) => x / n) : v;
 }

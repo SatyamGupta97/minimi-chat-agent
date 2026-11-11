@@ -39,7 +39,7 @@ export class AnthropicProvider implements Provider {
   }
 
   missingConfig(): string | null {
-    return this.apiKey ? null : "No API key set. Put a Groq, Claude or Gemini key in .env as LLM_API_KEY.";
+    return this.apiKey ? null : "No API key set. Put an OpenAI, Gemini, Claude or Groq key in .env as LLM_API_KEY.";
   }
 
   async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {

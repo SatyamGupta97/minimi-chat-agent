@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { Agent, type AgentEvent } from "./agent.ts";
+import { embedMissing } from "./semantic.ts";
 import { config } from "./config.ts";
 import { createProvider } from "./providers/index.ts";
 import { Store } from "./store.ts";
@@ -137,6 +138,9 @@ const server = createServer(async (req, res) => {
 server.listen(config.port, () => {
   console.log(`\n  Chat agent running → http://localhost:${config.port}`);
   console.log(`  provider: ${config.provider} · model: ${config.chatModel} (effort ${config.effort}) · memory: ${config.dataFile}`);
+  console.log(
+    `  memory search: ${provider.embeddingModel ? `meaning + keywords (${provider.embeddingModel})` : "keywords only (this vendor has no embedding API; an OpenAI or Gemini key adds meaning-based search)"}`,
+  );
   for (const w of config.warnings) console.warn(`  ⚠ ${w}`);
   const missing = provider.missingConfig();
   if (missing) {
@@ -147,5 +151,8 @@ server.listen(config.port, () => {
   agent
     .recoverPendingExtractions()
     .then(({ attempted, succeeded }) => attempted && console.log(`  fact extraction recovery: ${succeeded}/${attempted} succeeded`))
+    // Meaning-based memory: embed older history the current vendor hasn't embedded yet (no-op without an embedding API).
+    .then(() => embedMissing(provider, store))
+    .then((n) => n && console.log(`  embedded ${n} past exchange(s) for meaning-based memory search`))
     .catch((e) => console.warn("  extraction recovery failed:", agent.errorMessage(e)));
 });

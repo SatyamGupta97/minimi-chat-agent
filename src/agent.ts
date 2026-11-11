@@ -1,6 +1,8 @@
 import { config } from "./config.ts";
 import { extractFacts } from "./extract.ts";
 import { lookupMemory } from "./memory-context.ts";
+import { reconcileProfile } from "./profile.ts";
+import { embedMissing, queryVector } from "./semantic.ts";
 import { SYSTEM_PROMPT, turnContext } from "./prompt.ts";
 import type { HistoryItem, Provider, TurnSetup } from "./providers/types.ts";
 import { memoryDigest, recentActivity, userProfile } from "./recall.ts";
@@ -65,6 +67,8 @@ function history(turns: Turn[], tz: string): HistoryItem[] {
 }
 
 export class Agent {
+  private profileQueue: Promise<void> = Promise.resolve();
+
   constructor(
     private provider: Provider,
     private store: Store,
@@ -96,7 +100,11 @@ export class Agent {
     let note = "";
 
     // Memory is looked up by the app, before the model runs (web search is the model's only tool).
-    const memory = lookupMemory(this.store, input.message, now, tz, { currentConversationId: convId, excludeTurnIds: new Set([userTurn.id]) });
+    const memory = lookupMemory(this.store, input.message, now, tz, {
+      currentConversationId: convId,
+      excludeTurnIds: new Set([userTurn.id]),
+      queryVector: await queryVector(this.provider, this.store, input.message), // undefined without an embedding API
+    });
     for (const q of memory.queries) emit({ type: "status", kind: "recall", detail: describeRecall(q), args: q });
 
     const setup: TurnSetup = {
@@ -190,6 +198,15 @@ export class Agent {
     try {
       const x = await extractFacts(this.provider, question.text, turn.text, turn.sources ?? []);
       this.store.updateTurn(turnId, { facts: x.facts, entities: x.entities, decisions: x.decisions, aboutUser: x.aboutUser, extraction: "done", extractionAttempts: attempts });
+      // Profile updates are serialized: two answers finishing together must not reconcile against the same stale profile.
+      if (x.aboutUser.length) {
+        this.profileQueue = this.profileQueue
+          .then(() => reconcileProfile(this.provider, this.store, x.aboutUser, turn.at, turn.id))
+          .then(() => undefined, (e) => console.warn("[profile]", this.errorMessage(e)));
+        await this.profileQueue;
+      }
+      // Meaning-based memory: embed this exchange (and anything older the current model hasn't embedded yet).
+      await embedMissing(this.provider, this.store).catch((e) => console.warn("[memory] embedding skipped:", this.errorMessage(e)));
       const conv = this.store.getConversation(turn.conversationId);
       if (x.title && conv && (setTitle || conv.title === question.text.slice(0, 60))) this.store.setTitle(conv.id, x.title);
     } catch (e) {

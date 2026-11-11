@@ -22,7 +22,7 @@ const Extraction = z.object({
   about_user: z
     .array(z.string())
     .describe(
-      "Durable facts the USER states about themselves in their message (never inferred, never from the assistant's answer): name, role, company, team size, location, timezone, preferences, ongoing projects. Self-contained sentences, e.g. 'The user's name is Satyam.' Empty if none.",
+      "Durable facts the USER states about themselves in their message (never inferred, never from the assistant's answer): name, role, company, team size, location, timezone, preferences, ongoing projects. Include corrections and retractions ('The user no longer lives in Delhi; they moved to Pune.', 'The user asked you to forget their budget.'). Self-contained sentences, e.g. 'The user's name is Satyam.' Empty if none.",
     ),
   facts: z
     .array(

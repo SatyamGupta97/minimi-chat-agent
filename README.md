@@ -1,6 +1,6 @@
 # minimi chat agent
 
-A chat agent with live web search and a memory of your past conversations, across chats, that knows when each one happened. Works with a Claude, Gemini or Groq API key. Ask it things like:
+A chat agent with live web search and a memory of your past conversations, across chats, that knows when each one happened. Works with an OpenAI, Gemini, Claude or Groq API key. Ask it things like:
 
 - "What are the cheapest serverless Postgres hosts right now?"
 - "What did I ask you yesterday? Is your answer still correct?"
@@ -9,20 +9,27 @@ A chat agent with live web search and a memory of your past conversations, acros
 ## Run
 
 ```bash
-cp .env.example .env      # paste ONE API key as LLM_API_KEY: Claude, Gemini or Groq
+cp .env.example .env      # paste ONE API key as LLM_API_KEY: OpenAI, Gemini, Claude or Groq
 npm install
 npm run dev               # http://localhost:3000
 ```
 
-Requires Node 20.12+. **Bring any one key.** The vendor is detected from the key's format, and nothing else needs configuring:
+Requires Node 20.12+. **Any one LLM API key works.** The vendor is detected from the key's format, and nothing else needs configuring. **OpenAI and Gemini keys work best:** they also have an embedding API, which lets memory find past chats by *meaning* ("my vacation" finds the chat about "a Goa trip"), not only by shared keywords.
 
-| Paste a key from | Looks like | Chat model + web search | Notes |
-|---|---|---|---|
-| **Claude** (Anthropic) | `sk-ant-…` | `claude-opus-5-5` + Anthropic web search | Enable web search for your org in the Anthropic Console |
-| **Gemini** (Google) | `AIza…` | `gemini-3.8-flash` + Google Search grounding | Search grounding needs billing enabled on the key's project |
-| **Groq** | `gsk_…` | `openai/gpt-oss-120b` + built-in browser search | Works on a free key, but the free tier is tight (~8K tokens/min, 200K/day per model); heavy multi-product questions can exhaust it for a while |
+| Paste a key from | Looks like | Chat model + web search | Memory search | Notes |
+|---|---|---|---|---|
+| **OpenAI** ⭐ | `sk-…` | `gpt-6.1-sol` + web search | meaning + keywords | |
+| **Gemini** ⭐ | `AIza…` | `gemini-3.8-flash` + Google Search grounding | meaning + keywords | Search grounding needs billing enabled on the key's project |
+| **Claude** | `sk-ant-…` | `claude-opus-5-5` + web search | keywords | Enable web search for your org in the Anthropic Console |
+| **Groq** | `gsk_…` | `openai/gpt-oss-120b` + browser search | keywords | Works on a free key, but the free tier is tight (~8K tokens/min, 200K/day per model) |
 
-Vendor-specific variables (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`) work too, and `LLM_PROVIDER` forces a vendor. The agent behaves the same on every vendor: memory, dates, citations and evidence rules live in vendor-neutral code, and each vendor is a small adapter in `src/providers/`.
+Vendor-specific variables (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`) work too, and `LLM_PROVIDER` forces a vendor. With several keys set, OpenAI or Gemini is preferred. The startup log says which memory search is active. Everything else behaves the same on every vendor: memory, dates, citations and evidence rules live in vendor-neutral code, and each vendor is a small adapter in `src/providers/`.
+
+### What it remembers across chats
+
+- **Who you are:** facts you state about yourself (name, city, team, preferences) form a profile used in every chat. It's kept current: "I moved to Pune" *replaces* "lives in Delhi", and "forget my budget" removes it.
+- **What you discussed:** the latest exchanges from your other chats, plus past chats related to your message, matched automatically (by meaning and keywords with OpenAI/Gemini; by keywords otherwise).
+- **When:** "what did I ask on 3 November?" or "last Tuesday…" looks up those exact days in your timezone.
 
 ## Testing: most of it needs no API key
 
@@ -47,7 +54,9 @@ Memory lives in `data/memory.json`. Delete it to start fresh.
 | File | What it does |
 |---|---|
 | `src/agent.ts` | The vendor-neutral turn: memory lookup, context, streaming, statuses, evidence, persistence |
-| `src/providers/` | One adapter per vendor (`anthropic.ts`, `gemini.ts`, `groq.ts`, `ollama.ts`) behind a small `Provider` interface: streaming, built-in search, citation format, JSON calls; `replay.ts` records/replays evals |
+| `src/providers/` | One adapter per vendor (`openai.ts`, `gemini.ts`, `anthropic.ts`, `groq.ts`, `ollama.ts`) behind a small `Provider` interface: streaming, built-in search, citation format, JSON calls, optional embeddings; `replay.ts` records/replays evals |
+| `src/profile.ts` | Keeps the user profile current: reconciles new statements into add / update / delete |
+| `src/semantic.ts` | Meaning-based memory: embeds exchanges in the background, embeds the message at question time, hybrid with keywords |
 | `src/prompt.ts` | Frozen system prompt (search policy, memory rules, answer style) |
 | `src/dates.ts`, `src/memory-context.ts` | Deterministic date-phrase resolution and the pre-model memory lookup |
 | `src/recall.ts` | Date-range plus BM25-style retrieval over past exchanges, and the per-turn memory index |

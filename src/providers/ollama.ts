@@ -23,11 +23,27 @@ export class OllamaProvider implements Provider {
   readonly name = "ollama";
   readonly webSearch = false;
 
+  /** Set only when OLLAMA_EMBED_MODEL names a local embedding model (e.g. nomic-embed-text). */
+  readonly embeddingModel?: string;
+
   constructor(
     private host: string,
     readonly chatModel: string,
     private extractModel: string,
-  ) {}
+    private embedModel?: string,
+  ) {
+    if (embedModel) this.embeddingModel = `ollama:${embedModel}`;
+  }
+
+  async embed(texts: string[]): Promise<number[][]> {
+    if (!this.embedModel) throw new Error("No OLLAMA_EMBED_MODEL configured");
+    const res = await this.post("/api/embed", { model: this.embedModel, input: texts });
+    const body = (await res.json()) as { embeddings?: number[][] };
+    return (body.embeddings ?? []).map((v) => {
+      const n = Math.hypot(...v);
+      return n ? v.map((x) => x / n) : v;
+    });
+  }
 
   missingConfig(): string | null {
     return null; // no key; reachability is reported by describeError

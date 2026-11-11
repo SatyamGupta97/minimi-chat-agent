@@ -70,4 +70,10 @@ export interface Provider {
   describeError(err: unknown): string | undefined;
   /** For a rate-limit error: how long the vendor says to wait. Undefined for other errors. */
   retryAfterMs?(err: unknown): number | undefined;
+  /**
+   * Meaning-based memory search, for vendors with an embedding API (OpenAI, Gemini).
+   * `embeddingModel` names the model + size, since vectors from different models can't be compared.
+   */
+  readonly embeddingModel?: string;
+  embed?(texts: string[], kind: "query" | "document"): Promise<number[][]>;
 }
