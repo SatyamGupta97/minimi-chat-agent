@@ -149,8 +149,22 @@ export class GroqProvider implements Provider {
     for (const h of setup.history) messages.push({ role: h.role, content: h.text });
     // Per-turn context in the newest user message keeps the earlier prefix identical.
     messages.push({ role: "user", content: `<context source="app, not the user">\n${setup.context}\n</context>\n\n${setup.message}` });
-    const { sink, citations } = setup;
+    // gpt-oss occasionally emits malformed tool-format output, which Groq rejects
+    // as "Parsing failed". It's transient: retry, but only while nothing has been
+    // shown to the user yet (a retry after streamed text would duplicate it).
+    for (let attempt = 0; ; attempt++) {
+      const shown = { text: false };
+      try {
+        return await this.stream(messages, setup, shown, signal);
+      } catch (err) {
+        if (!isParseFailure(err) || shown.text || attempt >= 2 || signal?.aborted) throw err;
+        console.warn(`[groq] model output failed to parse (attempt ${attempt + 1}); retrying. Output began: ${failedGeneration(err)}`);
+      }
+    }
+  }
 
+  private async stream(messages: ChatCompletionMessageParam[], setup: TurnSetup, shown: { text: boolean }, signal?: AbortSignal): Promise<StepResult> {
+    const { sink, citations } = setup;
     const stream = await this.client.chat.completions.create(
       {
         model: this.chatModel,
@@ -171,6 +185,7 @@ export class GroqProvider implements Provider {
     const emit = (s: string) => {
       if (!s) return;
       text += s;
+      shown.text = true;
       sink.text(s);
     };
 
@@ -211,8 +226,19 @@ export class GroqProvider implements Provider {
       }
       return `Rate limited by Groq${wait ? `; retry in ~${Math.ceil(wait)}s` : ""} (free-tier keys allow ~8K tokens/min).`;
     }
+    if (isParseFailure(err)) return "The model produced malformed output (a transient Groq/gpt-oss issue). Please ask again.";
     return `Groq API error ${err.status ?? ""}: ${err.message}`;
   }
+}
+
+function isParseFailure(err: unknown): boolean {
+  return err instanceof Groq.APIError && /parsing failed|output_parse_failed|could not be parsed/i.test(`${err.message} ${JSON.stringify(err.error ?? "")}`);
+}
+
+function failedGeneration(err: unknown): string {
+  const body = (err as { error?: { error?: { failed_generation?: string }; failed_generation?: string } }).error;
+  const g = body?.error?.failed_generation ?? body?.failed_generation ?? "";
+  return JSON.stringify(String(g).slice(0, 300));
 }
 
 /** Announce searches as they start; collect pages once their output arrives. */
