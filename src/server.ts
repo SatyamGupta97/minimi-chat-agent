@@ -1,8 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
-import { Agent, errorMessage, type AgentEvent } from "./agent.ts";
-import { config, createClient } from "./config.ts";
+import { Agent, type AgentEvent } from "./agent.ts";
+import { config } from "./config.ts";
+import { createProvider } from "./providers/index.ts";
 import { Store } from "./store.ts";
 import { isValidTimeZone } from "./time.ts";
 
@@ -13,7 +14,8 @@ try {
   console.error(`\n  ✖ ${(e as Error).message}\n`);
   process.exit(1);
 }
-const agent = new Agent(createClient(), store);
+const provider = createProvider();
+const agent = new Agent(provider, store);
 
 const STATIC: Record<string, string> = {
   "/": "public/index.html",
@@ -81,7 +83,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   try {
     await agent.runTurn({ conversationId, message, tz, signal: abort.signal }, send);
   } catch (err) {
-    send({ type: "error", message: errorMessage(err) });
+    send({ type: "error", message: agent.errorMessage(err) });
   } finally {
     clearInterval(heartbeat);
     if (lockedId) busy.delete(lockedId);
@@ -120,21 +122,22 @@ const server = createServer(async (req, res) => {
     json(res, 404, { error: "not found" });
   } catch (err) {
     console.error(err);
-    if (!res.headersSent) json(res, 500, { error: errorMessage(err) });
+    if (!res.headersSent) json(res, 500, { error: agent.errorMessage(err) });
     else res.end();
   }
 });
 
 server.listen(config.port, () => {
   console.log(`\n  Chat agent running → http://localhost:${config.port}`);
-  console.log(`  model: ${config.chatModel} (thinking ${config.chatThinking.toLowerCase()}) · memory: ${config.dataFile}`);
-  if (!config.apiKey) {
-    console.warn("  ⚠ GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.\n");
+  console.log(`  provider: ${config.provider} · model: ${config.chatModel} (effort ${config.effort}) · memory: ${config.dataFile}`);
+  const missing = provider.missingConfig();
+  if (missing) {
+    console.warn(`  ⚠ ${missing}\n`);
     return;
   }
   // Finish any fact extraction a previous run was interrupted in the middle of.
   agent
     .recoverPendingExtractions()
     .then(({ attempted, succeeded }) => attempted && console.log(`  fact extraction recovery: ${succeeded}/${attempted} succeeded`))
-    .catch((e) => console.warn("  extraction recovery failed:", errorMessage(e)));
+    .catch((e) => console.warn("  extraction recovery failed:", agent.errorMessage(e)));
 });

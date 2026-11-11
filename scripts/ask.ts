@@ -3,7 +3,8 @@
  * Shares the same memory file as the web UI.
  */
 import { Agent } from "../src/agent.ts";
-import { config, createClient } from "../src/config.ts";
+import { config } from "../src/config.ts";
+import { createProvider } from "../src/providers/index.ts";
 import { Store } from "../src/store.ts";
 
 const args = process.argv.slice(2);
@@ -15,7 +16,7 @@ if (!message) {
   process.exit(1);
 }
 
-const agent = new Agent(createClient(), new Store(config.dataFile));
+const agent = new Agent(createProvider(), new Store(config.dataFile));
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 await agent.runTurn({ conversationId, message, tz }, (e) => {
   if (e.type === "final") process.stdout.write(`${e.text}\n`);

@@ -1,6 +1,6 @@
 # Design
 
-**One tool-using research agent on Gemini, with deterministic temporal memory, asynchronous fact extraction, and per-claim comparison against the past.**
+**One tool-using research agent, with deterministic temporal memory, asynchronous fact extraction, and per-claim comparison against the past. It runs on Groq (`gpt-oss-120b` + built-in browser search) or Gemini (Google Search grounding) behind one small adapter interface.**
 
 ## How it works
 
@@ -9,8 +9,9 @@ POST /api/chat (SSE) → Agent.runTurn
   1. save the question (it is memory even if the answer fails)
   2. contents = earlier turns as text, each stamped "[sent <time>]"
               + new message, prefixed by an app <context> block: clock, 21-day calendar, index of past chats
-  3. stream Gemini with Google Search (server-side grounding) + recall_memory (local function: date range + topic)
-  4. stream text and "Searching: …"; place [n] citations from groundingSupports when the response ends
+  3. stream the model with its built-in web search + recall_memory (local function: date range + topic)
+  4. stream text and "Searching: …"; the adapter turns the vendor's citations into stable [n] markers
+     (Groq 【cursor†Lx-Ly】 → the exact search result behind those lines; Gemini groundingSupports)
   5. save the answer: status, replyTo, cited sources (evidence) apart from pages it only read
   6. background: a small model extracts {title, entities, user decisions, facts}; retried after a restart
 ```
@@ -23,7 +24,8 @@ POST /api/chat (SSE) → Agent.runTurn
 - **The model reads the fuzzy part; the code does the exact part.** The model turns "last Tuesday" or "the CRM shortlist" into `from`/`to`/`query`. The code applies a hard date filter and BM25-style ranking over the question, entities, user decisions and facts. When nothing matches, it still reports what memory does hold, so the agent says "nothing on 3 Nov; my first chat with you is 9 Nov" instead of inventing one.
 - **Prove change, don't narrate it.** Facts are extracted when a turn is saved, so "has pricing changed?" becomes a per-claim diff: the stored value against a cited current value. No change is reported without both sides, a missing baseline is reported as unknown, and a page's publish date is not the date a change took effect.
 - **Only finished, cited answers are evidence.** Answers carry `completed | incomplete | failed | cancelled`, and only completed ones become baselines. Answers link to their question by `replyTo`, never by position. Old v1 data is migrated, and pairings that couldn't be recovered are marked `inferred`.
-- **Fast.** The first token comes from the one call that does the work. Gemini 3+ combines Search with function calling, so search costs no extra round trip. Extraction runs after the reply. Per-turn context sits only in the newest message, so the prefix stays cacheable.
+- **Fast.** The first token comes from the one call that does the work. Both vendors run search server-side inside that call alongside our function tool, so search costs no extra round trip. On Groq a searched answer typically takes 8–25 s, and the first token arrives in under a second. Extraction runs after the reply. Per-turn context sits only in the newest message, so the prefix stays cacheable.
+- **Vendor-neutral core.** Vendor SDKs are imported only in `src/providers/`. The `Provider` interface is small: one streamed step, tool results, a JSON call, and error text. Each adapter maps its vendor's citation format onto the same `[n]` + `Source` records, so stored memory doesn't depend on the vendor. Memory, recall, statuses, evidence rules and evals don't change when the vendor does. The remaining assumption is built-in server-side search; a vendor without it would search inside its adapter, at the cost of a round trip. Groq is the default because it works on a free key.
 
 ## Considered and rejected
 

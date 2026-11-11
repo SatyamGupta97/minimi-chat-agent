@@ -9,12 +9,17 @@ A chat agent with live web search and a memory of your past conversations that k
 ## Run
 
 ```bash
-cp .env.example .env      # add your GEMINI_API_KEY
+cp .env.example .env      # add GROQ_API_KEY (or GEMINI_API_KEY)
 npm install
 npm run dev               # http://localhost:3000
 ```
 
-Requires Node 20.12+. One key is needed: a Google Gemini API key from https://aistudio.google.com/apikey. It covers the chat model (`gemini-3.8-flash` by default, with built-in Google Search grounding) and the background fact extractor (`gemini-3.5-flash-lite`). For the highest quality, set `CHAT_MODEL=gemini-4-carbon`.
+Requires Node 20.12+. You need one key from either provider:
+
+| Provider | Key | Chat model + search | Notes |
+|---|---|---|---|
+| **Groq** (default when its key is set) | `GROQ_API_KEY` from https://console.groq.com/keys | `openai/gpt-oss-120b` + built-in `browser_search` | Works on a free key. The free tier allows 8K tokens/min, so big multi-product questions can hit the limit; wait a minute and retry. |
+| **Google Gemini** | `GEMINI_API_KEY` from https://aistudio.google.com/apikey | `gemini-3.8-flash` + Google Search grounding | Search grounding needs billing enabled on the key's project. |
 
 Optional:
 
@@ -31,7 +36,8 @@ Memory lives in `data/memory.json`. Delete it to start fresh.
 
 | File | What it does |
 |---|---|
-| `src/agent.ts` | The turn loop: builds context, streams Gemini, runs `recall_memory`, collects citations, persists |
+| `src/agent.ts` | The vendor-neutral turn loop: context, `recall_memory`, statuses, evidence, persistence |
+| `src/providers/` | One adapter per vendor (`groq.ts`, `gemini.ts`) behind a small `Provider` interface: streaming, built-in search, citation format, JSON calls |
 | `src/prompt.ts` | Frozen system prompt (search policy, memory rules, answer style) |
 | `src/recall.ts` | Date-range plus BM25-style retrieval over past exchanges, and the per-turn memory index |
 | `src/time.ts` | Timezone-correct local dates and the calendar given to the model |

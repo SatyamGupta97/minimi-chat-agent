@@ -1,6 +1,5 @@
-import { type GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { z } from "zod";
-import { config } from "./config.ts";
+import type { Provider } from "./providers/types.ts";
 import type { Fact, Source } from "./store.ts";
 
 /**
@@ -33,26 +32,17 @@ const Extraction = z.object({
     .describe("Time-sensitive, verifiable claims made in the answer (prices, limits, features, releases, dates, versions). Empty if none."),
 });
 
-const SCHEMA = z.toJSONSchema(Extraction);
-
 export async function extractFacts(
-  client: GoogleGenAI,
+  provider: Provider,
   question: string,
   answer: string,
   sources: Source[],
 ): Promise<{ title: string; facts: Fact[]; entities: string[]; decisions: string[] }> {
   const sourceList = sources.map((s, i) => `[${i + 1}] ${s.title} - ${s.url}`).join("\n");
-  const res = await client.models.generateContent({
-    model: config.extractModel,
-    contents: `Extract a short title, the entities discussed, the user's decisions/context, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
-    config: {
-      responseMimeType: "application/json",
-      responseJsonSchema: SCHEMA,
-      thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
-    },
-  });
-  // Validate: the schema constrains generation, zod guards what we store.
-  const out = Extraction.parse(JSON.parse(res.text ?? ""));
+  const out = await provider.json(
+    `Extract a short title, the entities discussed, the user's decisions/context, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
+    Extraction,
+  );
   const urlFor = (n: string | null) => sources.find((s) => n && (s.title === n || s.url === n))?.url ?? null;
   return {
     title: out.title.trim().slice(0, 80),

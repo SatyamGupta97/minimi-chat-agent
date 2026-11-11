@@ -21,13 +21,12 @@
  *     tell a wrong current value from a right one. It can tell an unsupported
  *     verdict from a supported one.
  */
-import { ThinkingLevel } from "@google/genai";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { Agent, type AgentEvent } from "../src/agent.ts";
-import { config, createClient } from "../src/config.ts";
+import { createProvider } from "../src/providers/index.ts";
 import type { Source } from "../src/store.ts";
 import { Store } from "../src/store.ts";
 import { localDate } from "../src/time.ts";
@@ -35,7 +34,7 @@ import { CRM, CRMS, daysAgo, type Fixture, lastWeekday, POSTGRES, seedFixture, S
 
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const now = new Date();
-const client = createClient();
+const client = createProvider();
 const spoken = (d: Date) => new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long" }).format(d);
 
 // ---- per-claim judge ------------------------------------------------------------
@@ -59,22 +58,18 @@ const Judgement = z.object({
 type Judgement = z.infer<typeof Judgement>;
 
 async function judge(question: string, answer: string, cited: Source[]): Promise<Judgement> {
-  const res = await client.models.generateContent({
-    model: config.extractModel,
-    contents: `You grade a research assistant's answer. Extract one record per (entity, attribute) the answer re-checks against a past conversation, using ONLY what the answer itself says. Do not use your own knowledge.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${cited.map((s, i) => `[${i + 1}] ${s.url}`).join("\n") || "(none)"}\n</sources>`,
-    config: {
-      responseMimeType: "application/json",
-      responseJsonSchema: z.toJSONSchema(Judgement),
-      thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-    },
-  });
-  return Judgement.parse(JSON.parse(res.text ?? ""));
+  return client.json(
+    `You grade a research assistant's answer. Extract one record per (entity, attribute) the answer re-checks against a past conversation, using ONLY what the answer itself says. Do not use your own knowledge.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${cited.map((s, i) => `[${i + 1}] ${s.url}`).join("\n") || "(none)"}\n</sources>`,
+    Judgement,
+    { strong: true },
+  );
 }
 
 // ---- scenario model ---------------------------------------------------------------
 
 interface Run {
   text: string;
+  error?: string;
   status: string;
   ms: number;
   searches: string[];
@@ -93,7 +88,11 @@ interface Scenario {
   checks: Check[];
 }
 
-const norm = (v: string | null | undefined) => (v ?? "").toLowerCase().replace(/[\s,]|\/(mo|month)|per month|\.00/g, "");
+/** Compare values by their dollar amounts ("$19 /mo Launch plan" == "$19/mo"); fall back to normalized text. */
+const norm = (v: string | null | undefined) => {
+  const amounts = (v ?? "").replace(/[\s\u00a0\u202f,]/g, "").match(/\$\d+(\.\d+)?/g);
+  return amounts ? amounts.join("|") : (v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+};
 const claimsFor = (r: Run, entity: string) => (r.judgement?.claims ?? []).filter((c) => c.entity.toLowerCase().includes(entity.toLowerCase()));
 
 /** Recall was asked for exactly this local date ("on 3 November" → from = to = 2026-11-03). */
@@ -231,7 +230,18 @@ const SCENARIOS: Scenario[] = [
 
 // ---- runner ---------------------------------------------------------------------
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Free-tier keys have small per-minute token budgets: wait out a rate limit and retry once. */
 async function run(s: Scenario): Promise<Run> {
+  const r = await runOnce(s);
+  if (!/rate limit/i.test(r.error ?? "")) return r;
+  console.log("  (rate limited; waiting 65s and retrying)");
+  await sleep(65_000);
+  return runOnce(s);
+}
+
+async function runOnce(s: Scenario): Promise<Run> {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "eval-")), "m.json"));
   s.history.forEach((f) => seedFixture(store, f, tz));
   const agent = new Agent(client, store);
@@ -242,7 +252,7 @@ async function run(s: Scenario): Promise<Run> {
     else if (e.type === "status" && e.kind === "recall") r.recalls.push(e.args as Run["recalls"][number]);
     else if (e.type === "sources") r.cited = e.cited;
     else if (e.type === "done") Object.assign(r, { status: e.status, ms: e.ms });
-    else if (e.type === "error") r.text += `\n[error] ${e.message}`;
+    else if (e.type === "error") r.error = e.message;
   });
   if (s.judge && r.status === "completed") {
     try {
@@ -268,6 +278,7 @@ for (const s of selected) {
     if (c.ok) passed++;
     console.log(`  ${c.ok ? "✓" : "✗"} ${c.name}`);
   }
+  if (r.error) console.log(`  error: ${r.error}`);
   console.log(`  ${(r.ms / 1000).toFixed(1)}s · ${r.searches.length} searches · ${r.recalls.length} recalls · ${r.cited.length} cited · ${r.status}`);
   results.push({ id: s.id, ask: s.ask, checks, ...r });
 }

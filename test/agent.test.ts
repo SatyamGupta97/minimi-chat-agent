@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type { GoogleGenAI } from "@google/genai";
+import type { Provider } from "../src/providers/types.ts";
 import { Agent } from "../src/agent.ts";
 import { exchanges, recall } from "../src/recall.ts";
 import { Store } from "../src/store.ts";
@@ -56,8 +56,9 @@ test("incomplete answers are flagged in recall, completed ones are not", () => {
   assert.equal(hits.find((h) => h.you_asked === "CRM pricing again")?.answer_status, undefined);
 });
 
-function fakeClient(generateContent: () => Promise<unknown>): GoogleGenAI {
-  return { models: { generateContent } } as unknown as GoogleGenAI;
+/** A provider whose structured-JSON call returns `json()`'s result; nothing else is used by extraction. */
+function fakeClient(json: () => Promise<unknown>): Provider {
+  return { json: async (_p: string, schema: { parse(x: unknown): unknown }) => schema.parse(await json()), describeError: () => undefined } as unknown as Provider;
 }
 
 function pendingTurn(s: Store) {
@@ -72,12 +73,10 @@ test("pending extractions are recovered on startup", async () => {
   const a = pendingTurn(s);
   const agent = new Agent(
     fakeClient(async () => ({
-      text: JSON.stringify({
-        title: "Postgres hosting",
-        entities: ["Neon"],
-        decisions: [],
-        facts: [{ subject: "Neon", attribute: "Launch price", value: "$19/mo", as_of: null, source: null }],
-      }),
+      title: "Postgres hosting",
+      entities: ["Neon"],
+      decisions: [],
+      facts: [{ subject: "Neon", attribute: "Launch price", value: "$19/mo", as_of: null, source: null }],
     })),
     s,
   );
@@ -107,8 +106,9 @@ test("extraction retries, then gives up after 3 attempts", async () => {
 });
 
 test("citations are placed after grounded segments, numbered stably across responses", async () => {
-  const { placeCitations } = await import("../src/agent.ts");
+  const { placeCitations } = await import("../src/providers/gemini.ts");
   const cited: { url: string; title: string }[] = [];
+  const citations = { cite: (s: { url: string; title: string }) => (cited.findIndex((c) => c.url === s.url) + 1 || cited.push(s)) };
   const text = "Neon costs €19/mo. Supabase costs $25/mo.";
   const meta = {
     groundingChunks: [{ web: { uri: "https://a", title: "neon.com" } }, { web: { uri: "https://b", title: "supabase.com" } }],
@@ -119,9 +119,9 @@ test("citations are placed after grounded segments, numbered stably across respo
       { segment: { endIndex: Buffer.byteLength(text) }, groundingChunkIndices: [1, 0] },
     ],
   };
-  assert.equal(placeCitations(text, meta, cited), "Neon costs €19/mo.[1] Supabase costs $25/mo.[2][1]");
+  assert.equal(placeCitations(text, meta, citations), "Neon costs €19/mo.[1] Supabase costs $25/mo.[2][1]");
   // A later response reuses numbers for sources already cited.
   const meta2 = { groundingChunks: [{ web: { uri: "https://b", title: "supabase.com" } }], groundingSupports: [{ segment: { text: "Still $25." }, groundingChunkIndices: [0] }] };
-  assert.equal(placeCitations("Still $25.", meta2, cited), "Still $25.[2]");
+  assert.equal(placeCitations("Still $25.", meta2, citations), "Still $25.[2]");
   assert.equal(cited.length, 2);
 });
