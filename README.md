@@ -9,12 +9,12 @@ A chat agent with live web search and a memory of your past conversations that k
 ## Run
 
 ```bash
-cp .env.example .env      # add your ANTHROPIC_API_KEY
+cp .env.example .env      # add your GEMINI_API_KEY
 npm install
 npm run dev               # http://localhost:3000
 ```
 
-Requires Node 20.12+. One key is needed: Anthropic. It covers the chat model, server-side web search (enable web search for your org in the Anthropic Console) and the background fact extractor.
+Requires Node 20.12+. One key is needed: a Google Gemini API key from https://aistudio.google.com/apikey. It covers the chat model (`gemini-3.8-flash` by default, with built-in Google Search grounding) and the background fact extractor (`gemini-3.5-flash-lite`). For the highest quality, set `CHAT_MODEL=gemini-4-carbon`.
 
 Optional:
 
@@ -31,7 +31,7 @@ Memory lives in `data/memory.json`. Delete it to start fresh.
 
 | File | What it does |
 |---|---|
-| `src/agent.ts` | The turn loop: builds context, streams Claude, runs `recall_memory`, collects citations, persists |
+| `src/agent.ts` | The turn loop: builds context, streams Gemini, runs `recall_memory`, collects citations, persists |
 | `src/prompt.ts` | Frozen system prompt (search policy, memory rules, answer style) |
 | `src/recall.ts` | Date-range plus BM25-style retrieval over past exchanges, and the per-turn memory index |
 | `src/time.ts` | Timezone-correct local dates and the calendar given to the model |

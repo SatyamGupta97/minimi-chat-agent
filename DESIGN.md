@@ -7,11 +7,11 @@
 ```
 POST /api/chat (SSE) → Agent.runTurn
   1. save the question (it's memory even if the answer fails)
-  2. request = frozen system prompt (cached)
+  2. request = frozen system instruction
              + this chat's earlier turns as text, each stamped "[sent <time>]"
-             + new message + per-turn system message: clock, 21-day calendar, index of past chats
-  3. stream Claude with  web_search     (Anthropic server tool; search runs inside the model call)
-                         recall_memory  (local, deterministic, ~1 ms: date range + topic)
+             + new message, prefixed by an app <context> block: clock, 21-day calendar, index of past chats
+  3. stream Gemini with  Google Search  (built-in grounding; search runs inside the model call)
+                         recall_memory  (function call; local, deterministic, ~1 ms: date range + topic)
   4. stream text, citations and "Searching: …" to the UI
   5. save the answer with status, replyTo, cited sources (evidence) and retrieved sources (read only)
   6. background: a small model extracts {title, entities, user decisions, facts}; retried after a restart
@@ -26,7 +26,7 @@ POST /api/chat (SSE) → Agent.runTurn
 - **Facts are extracted when a turn is saved.** "Has pricing changed?" then becomes a per-claim diff: the old value and its source against a fresh search. The prompt sets three rules. No change is reported without both sides. An unknown baseline is reported as unknown. A page's publish date is not the date a change took effect. The extractor also keeps what the *user* decided (the shortlist), so the agent doesn't have to ask again.
 - **Only finished, cited answers count as evidence.** Each answer has a status: `completed`, `incomplete`, `failed` or `cancelled`. Only `completed` answers are extracted and trusted as a baseline. A cut-off answer comes back as "(my previous answer was cut off)", never as something the agent said. Cited sources are kept apart from pages the answer only read. Answers link to their question explicitly (`replyTo`), never by position.
 
-**Fast.** The first token comes from the one call that does the work: no router, no planner, no summarizer before the answer. Search runs on Anthropic's side, so it adds no round trip through this server. Extraction happens after the reply. The system prompt is frozen and cached. Per-turn context goes in a mid-conversation `system` message (supported on Opus 5.5), so the cached prefix stays byte-identical. Raw search-result blocks are never replayed into later turns: they're large and already stale.
+**Fast.** The first token comes from the one call that does the work: no router, no planner, no summarizer before the answer. Search runs on Google's side inside the same call: Gemini 3+ can combine built-in Search with function calling (`VALIDATED` mode), so it adds no round trip through this server. Extraction happens after the reply. The system instruction is frozen. Per-turn context sits only in the newest user message, so the prefix stays byte-identical and Gemini's implicit cache can reuse it. Within a turn, the model's parts are passed back verbatim so its thought signatures survive the tool round-trips. Raw grounding results are never replayed into later turns: they're large and already stale. Citations are placed when each response ends, from `groundingSupports` (matched by segment text, then by UTF-8 byte offset). The Google Search Suggestions block is shown with each grounded answer, as the Search terms require, in a sandboxed iframe.
 
 **Good to talk to.** It leads with the answer and uses tables for comparisons. It asks a one-line question only when it can't proceed, and it is honest about what it did and didn't verify.
 
@@ -35,7 +35,8 @@ POST /api/chat (SSE) → Agent.runTurn
 - **Intent → plan → search → evaluate → synthesize pipeline.** That's 3–5 serial LLM calls before the first token. A strong model in one tool loop already plans, searches in parallel, re-searches when evidence is thin, and stops. I'd add stages only if the evals showed the loop failing.
 - **Pre-retrieving memory on every turn.** It wastes tokens and attention on the ~90% of turns that don't refer to the past. The per-turn chat index tells the model when recall is worth calling.
 - **Postgres + pgvector, React.** They'd break "`npm install && npm run dev`, one key" and add little for a single user with thousands of turns. The hard constraint is the date filter, which embeddings don't help with. Storage is an atomic JSON file and assumes **one server process**. Writes are synchronous, so they're serialized within it. `Store` is narrow enough to swap for SQLite or Postgres in one file.
-- **Tavily/Brave plus a fetch tool.** The brief says one tool. The server tool returns citations natively and needs no extra key.
+- **Tavily/Brave plus a fetch tool.** The brief says one tool. Gemini's Search grounding returns citations natively and needs no extra key.
+- **A two-call design (search sub-call + reasoning call).** Older Gemini models couldn't combine Search with function calling, which would have forced it. Gemini 3+ can, so the single loop stays. Trade-off: grounding links are Google redirect URLs with the domain as the title, so stored sources identify the site rather than the exact page.
 
 ## Evaluation
 

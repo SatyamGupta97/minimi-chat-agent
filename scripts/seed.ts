@@ -9,9 +9,8 @@
  *
  *   npm run seed
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { Agent } from "../src/agent.ts";
-import { config } from "../src/config.ts";
+import { config, createClient } from "../src/config.ts";
 import { Store } from "../src/store.ts";
 
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -31,7 +30,7 @@ const seeds = [
   { at: lastWeekday(1, 15), q: "We're a 20-person sales team. Shortlist 5 CRM tools for us with per-seat pricing." },
 ];
 
-const agent = new Agent(new Anthropic(), new Store(config.dataFile));
+const agent = new Agent(createClient(), new Store(config.dataFile));
 for (const s of seeds) {
   console.log(`\n▶ [${s.at.toDateString()}] ${s.q}`);
   await agent.runTurn({ message: s.q, tz, now: s.at }, (e) => {

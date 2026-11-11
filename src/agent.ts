@@ -1,25 +1,32 @@
-import Anthropic from "@anthropic-ai/sdk";
+import {
+  ApiError,
+  type Content,
+  FinishReason,
+  FunctionCallingConfigMode,
+  type FunctionDeclaration,
+  type GoogleGenAI,
+  type GroundingMetadata,
+  type Part,
+} from "@google/genai";
 import { z } from "zod";
-import { config } from "./config.ts";
+import { config, MissingKeyError } from "./config.ts";
 import { extractFacts } from "./extract.ts";
 import { SYSTEM_PROMPT, turnContext } from "./prompt.ts";
 import { memoryDigest, recall } from "./recall.ts";
 import type { Source, Store, Turn, TurnStatus } from "./store.ts";
 import { humanDateTime, temporalContext } from "./time.ts";
 
-type MessageParam = Anthropic.Beta.BetaMessageParam;
-type ContentBlock = Anthropic.Beta.BetaContentBlock;
-
 /** Events streamed to the UI (and printed by the CLI). */
 export type AgentEvent =
   | { type: "meta"; conversationId: string; title: string }
   | { type: "status"; kind: "search"; query: string }
   | { type: "status"; kind: "recall"; detail: string; args: unknown }
-  | { type: "status"; kind: "thinking" }
   | { type: "text"; text: string }
-  /** Model fallback restarted the answer: discard what was streamed so far. */
-  | { type: "reset" }
+  /** Authoritative full answer (with citation markers placed); replaces the streamed text. */
+  | { type: "final"; text: string }
   | { type: "sources"; cited: Source[]; retrieved: Source[] }
+  /** Google Search Suggestions HTML, which must be shown with grounded answers. */
+  | { type: "suggestions"; html: string }
   | { type: "done"; turnId: string; status: TurnStatus; ms: number; searches: number }
   | { type: "error"; message: string };
 
@@ -32,14 +39,6 @@ export interface TurnInput {
   signal?: AbortSignal;
 }
 
-// Models that accept server-side refusal fallbacks.
-const FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2"]);
-// Models that accept mid-conversation `role: "system"` messages. Others get the
-// per-turn context as a marked block inside the user message instead.
-const SYSTEM_MESSAGE_MODELS = new Set([
-  "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5", "claude-haiku-5-5",
-  "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2",
-]);
 const MAX_EXTRACTION_ATTEMPTS = 3;
 
 const RecallInput = z.object({
@@ -49,11 +48,11 @@ const RecallInput = z.object({
   limit: z.number().int().min(1).max(20).optional(),
 });
 
-const RECALL_TOOL: Anthropic.Beta.BetaTool = {
+const RECALL_TOOL: FunctionDeclaration = {
   name: "recall_memory",
   description:
     "Search the user's past conversations with you. Returns matching exchanges (when, what they asked, what you answered, what it was about, what the user decided, the facts you stated, the sources you cited) plus an overview of what memory exists. Give a date range (inclusive, user's local dates) when the user refers to a time, a topic query when they refer to a subject, or both. Results already in the current conversation are flagged. Answers with answer_status other than 'completed' were cut off and are not a reliable baseline.",
-  input_schema: {
+  parametersJsonSchema: {
     type: "object",
     properties: {
       query: { type: "string", description: "Topic keywords, e.g. 'postgres hosting pricing'. Omit to list everything in the date range." },
@@ -63,7 +62,6 @@ const RECALL_TOOL: Anthropic.Beta.BetaTool = {
     },
     additionalProperties: false,
   },
-  eager_input_streaming: true,
 };
 
 const INTERRUPTED_NOTE: Record<Exclude<TurnStatus, "completed">, string> = {
@@ -75,35 +73,86 @@ const INTERRUPTED_NOTE: Record<Exclude<TurnStatus, "completed">, string> = {
 /**
  * Prior turns of the current conversation, replayed as plain text.
  *
- * We deliberately do NOT replay raw web-search result blocks or thinking blocks
- * from earlier turns: they are large (encrypted page content), slow every later
- * request down, and are stale by the next turn anyway. Each completed assistant
- * turn keeps the sources it cited so follow-ups can refer to them; an answer
- * that didn't complete is replaced by a note, so a half-answer is never treated
- * as something the assistant stands behind. Each user turn carries the time it
- * was sent, so "since then" in a chat resumed three days later means three days.
+ * Raw grounding results and thought parts from earlier turns are NOT replayed:
+ * they're large, stale by the next turn, and only needed within the turn that
+ * produced them. Each completed answer keeps the sources it cited, so follow-ups
+ * can refer to them. An answer that didn't complete is replaced by a note, so a
+ * half-answer is never treated as something the assistant stands behind. Each
+ * user turn carries the time it was sent, so "since then" in a chat resumed
+ * three days later means three days.
  */
-function historyMessages(turns: Turn[], tz: string): MessageParam[] {
-  const recent = turns.slice(-config.historyTurns);
-  const msgs: MessageParam[] = [];
-  for (const t of recent) {
-    if (t.role === "user") {
-      msgs.push({ role: "user", content: `[sent ${humanDateTime(new Date(t.at), t.tz || tz)}]\n${t.text}` });
-    } else if (t.status && t.status !== "completed") {
-      msgs.push({ role: "assistant", content: INTERRUPTED_NOTE[t.status] });
-    } else if (t.text.trim()) {
-      const src = (t.sources ?? []).slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} - ${s.url}`);
-      const footer = src.length ? `\n\nSources:\n${src.join("\n")}` : "";
-      msgs.push({ role: "assistant", content: t.text + footer });
+function historyContents(turns: Turn[], tz: string): Content[] {
+  const out: Content[] = [];
+  const push = (role: "user" | "model", text: string) => {
+    const last = out[out.length - 1];
+    if (last?.role === role) last.parts!.push({ text }); // Gemini wants alternating roles
+    else out.push({ role, parts: [{ text }] });
+  };
+  for (const t of turns.slice(-config.historyTurns)) {
+    if (t.role === "user") push("user", `[sent ${humanDateTime(new Date(t.at), t.tz || tz)}]\n${t.text}`);
+    else if (t.status && t.status !== "completed") push("model", INTERRUPTED_NOTE[t.status]);
+    else if (t.text.trim()) {
+      const src = (t.sources ?? []).slice(0, 8).map((s, i) => `[${i + 1}] ${s.title}`);
+      push("model", t.text + (src.length ? `\n\nSources:\n${src.join("\n")}` : ""));
     }
   }
-  while (msgs.length && msgs[0].role !== "user") msgs.shift();
-  return msgs;
+  while (out.length && out[0].role !== "user") out.shift();
+  return out;
+}
+
+/** UTF-8 byte offset -> JS string index (grounding segments are measured in bytes). */
+function byteToCharIndex(s: string, bytes: number): number {
+  return Buffer.from(s, "utf8").subarray(0, bytes).toString("utf8").length;
+}
+
+/**
+ * Place [n] markers after each grounded segment of one response's text.
+ * `cited` is shared across the turn so numbering is stable; the index into it
+ * (plus one) is the marker number.
+ */
+export function placeCitations(text: string, meta: GroundingMetadata | undefined, cited: Source[]): string {
+  const chunks = meta?.groundingChunks ?? [];
+  const inserts: { at: number; nums: number[] }[] = [];
+  let cursor = 0;
+  const supports = [...(meta?.groundingSupports ?? [])].sort((a, b) => (a.segment?.endIndex ?? 0) - (b.segment?.endIndex ?? 0));
+  for (const sup of supports) {
+    const seg = sup.segment;
+    if (!seg) continue;
+    // Prefer matching the segment text (robust to how parts were split while
+    // streaming); fall back to the byte offset.
+    let at = seg.text ? text.indexOf(seg.text, Math.max(0, cursor - seg.text.length)) : -1;
+    at = at >= 0 ? at + seg.text!.length : seg.endIndex != null ? byteToCharIndex(text, seg.endIndex) : -1;
+    if (at < 0) continue;
+    cursor = at;
+    const nums: number[] = [];
+    for (const ci of sup.groundingChunkIndices ?? []) {
+      const web = chunks[ci]?.web;
+      if (!web?.uri) continue;
+      let idx = cited.findIndex((s) => s.url === web.uri);
+      if (idx < 0) {
+        cited.push({ url: web.uri, title: web.title ?? web.uri });
+        idx = cited.length - 1;
+      }
+      if (!nums.includes(idx + 1)) nums.push(idx + 1);
+    }
+    if (nums.length) inserts.push({ at, nums });
+  }
+  let out = text;
+  for (const ins of inserts.sort((a, b) => b.at - a.at)) {
+    out = out.slice(0, ins.at) + ins.nums.map((n) => `[${n}]`).join("") + out.slice(ins.at);
+  }
+  return out;
+}
+
+/** Search queries from a server-side tool call part (args shape varies by tool version). */
+function queriesOf(args: Record<string, unknown> | undefined): string[] {
+  const q = args?.queries ?? args?.query ?? args?.q;
+  return (Array.isArray(q) ? q : [q]).filter((x): x is string => typeof x === "string" && x.length > 0);
 }
 
 export class Agent {
   constructor(
-    private client: Anthropic,
+    private client: GoogleGenAI,
     private store: Store,
   ) {}
 
@@ -122,145 +171,108 @@ export class Agent {
     // Persist the question first: it's part of memory even if the answer fails.
     const userTurn = this.store.addTurn({ conversationId: convId, role: "user", text: input.message, at: now.toISOString(), tz });
 
+    // Per-turn context (clock, calendar, memory index) rides in the newest user
+    // message, marked as coming from the app. Everything before it stays
+    // byte-identical between turns, which keeps Gemini's implicit prefix cache warm.
     const context = turnContext(temporalContext(now, tz), memoryDigest(this.store, tz, convId));
-    const userText = `[sent ${humanDateTime(now, tz)}]\n${input.message}`;
-    const messages: MessageParam[] = [...historyMessages(prior, tz)];
-    if (SYSTEM_MESSAGE_MODELS.has(config.chatModel)) {
-      // Per-turn context as a mid-conversation system message: keeps the cached
-      // prefix (system prompt + earlier turns) byte-identical while giving the
-      // model fresh operator-level facts (clock, calendar, memory index).
-      messages.push({ role: "user", content: userText }, { role: "system", content: context });
-    } else {
-      messages.push({
-        role: "user",
-        content: [
-          { type: "text", text: `<context source="app, not the user">\n${context}\n</context>` },
-          { type: "text", text: userText },
-        ],
-      });
-    }
-
-    const tools: Anthropic.Beta.BetaToolUnion[] = [
-      {
-        type: "web_search_20260209",
-        name: "web_search",
-        max_uses: config.maxSearchesPerTurn,
-        user_location: { type: "approximate", timezone: tz },
-      },
-      RECALL_TOOL,
+    const contents: Content[] = historyContents(prior, tz);
+    const newParts: Part[] = [
+      { text: `<context source="app, not the user">\n${context}\n</context>` },
+      { text: `[sent ${humanDateTime(now, tz)}]\n${input.message}` },
     ];
+    const last = contents[contents.length - 1];
+    if (last?.role === "user") last.parts!.push(...newParts);
+    else contents.push({ role: "user", parts: newParts });
 
-    const seen = new Map<string, Source>(); // every search result, by URL
     const cited: Source[] = []; // in order of first citation; index+1 = marker number
+    const read = new Map<string, Source>(); // every grounding chunk seen, by URL
     const searches: string[] = [];
-    let answer = "";
-    let status: TurnStatus = "incomplete"; // proven "completed" only by a clean end_turn
+    let answer = ""; // authoritative text, with citation markers
+    let suggestions = "";
+    let status: TurnStatus = "incomplete"; // proven "completed" only by a clean STOP
     let note = "";
 
-    const citeMarker = (block: Anthropic.Beta.BetaTextBlock): string => {
-      const nums = new Set<number>();
-      for (const c of block.citations ?? []) {
-        if (c.type !== "web_search_result_location") continue;
-        let idx = cited.findIndex((s) => s.url === c.url);
-        if (idx < 0) {
-          cited.push(seen.get(c.url) ?? { url: c.url, title: c.title ?? c.url });
-          idx = cited.length - 1;
-        }
-        nums.add(idx + 1);
-      }
-      return [...nums].map((n) => `[${n}]`).join("");
-    };
-
-    const say = (s: string) => {
-      answer += s;
-      emit({ type: "text", text: s });
+    const search = (q: string) => {
+      if (searches.includes(q)) return;
+      searches.push(q);
+      emit({ type: "status", kind: "search", query: q });
     };
 
     try {
+      if (!config.apiKey) throw new MissingKeyError();
       let finished = false;
       for (let iter = 0; iter < config.maxIterations && !finished; iter++) {
-        if (iter > 0 && answer && !answer.endsWith("\n")) say("\n\n");
-
-        const stream = this.client.beta.messages.stream(
-          {
-            model: config.chatModel,
-            max_tokens: 32000,
-            system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
-            tools,
-            messages,
-            thinking: { type: "adaptive" },
-            output_config: { effort: config.chatEffort },
-            // Cache the conversation prefix too, so each round-trip in this turn
-            // (and the next turn) re-reads it cheaply.
-            cache_control: { type: "ephemeral" },
-            ...(FALLBACK_MODELS.has(config.chatModel)
-              ? { betas: ["server-side-fallback-2026-07-01"], fallbacks: "default" as const }
-              : {}),
+        const stream = await this.client.models.generateContentStream({
+          model: config.chatModel,
+          contents,
+          config: {
+            systemInstruction: SYSTEM_PROMPT,
+            // Google Search (server-side, runs inside this call) + our memory tool (client-side).
+            tools: [{ googleSearch: {} }, { functionDeclarations: [RECALL_TOOL] }],
+            toolConfig: {
+              // Surface the server-side search calls so the UI can show what's being searched.
+              includeServerSideToolInvocations: true,
+              // Combining built-in tools with functions requires VALIDATED mode.
+              functionCallingConfig: { mode: FunctionCallingConfigMode.VALIDATED },
+            },
+            thinkingConfig: { thinkingLevel: config.chatThinking },
+            maxOutputTokens: 32_000,
+            abortSignal: input.signal,
           },
-          { signal: input.signal },
-        );
-
-        stream.on("streamEvent", (ev, snapshot) => {
-          if (ev.type === "content_block_start") {
-            if (ev.content_block.type === "thinking" && !answer) emit({ type: "status", kind: "thinking" });
-            if (ev.content_block.type === "fallback") {
-              answer = "";
-              cited.length = 0;
-              emit({ type: "reset" });
-            }
-            return;
-          }
-          if (ev.type === "content_block_delta" && ev.delta.type === "text_delta") {
-            say(ev.delta.text);
-            return;
-          }
-          if (ev.type !== "content_block_stop") return;
-          const block = snapshot.content[ev.index] as ContentBlock | undefined;
-          if (!block) return;
-          if (block.type === "server_tool_use" && block.name === "web_search") {
-            const q = String((block.input as { query?: unknown })?.query ?? "");
-            if (q) {
-              searches.push(q);
-              emit({ type: "status", kind: "search", query: q });
-            }
-          } else if (block.type === "web_search_tool_result" && Array.isArray(block.content)) {
-            for (const r of block.content) {
-              if (!seen.has(r.url)) seen.set(r.url, { url: r.url, title: r.title, pageAge: r.page_age });
-            }
-          } else if (block.type === "text" && block.citations?.length) {
-            const marker = citeMarker(block);
-            if (marker) say(marker);
-          } else if (block.type === "tool_use" && block.name === "recall_memory") {
-            emit({ type: "status", kind: "recall", detail: describeRecall(block.input), args: block.input });
-          }
         });
 
-        const msg = await stream.finalMessage();
+        const parts: Part[] = []; // the model's turn, kept verbatim (thought signatures included)
+        let text = "";
+        let meta: GroundingMetadata | undefined;
+        let finish: FinishReason | undefined;
+        let blocked = false;
 
-        switch (msg.stop_reason) {
-          case "pause_turn":
-            // Long server-side search turn: send it back so the server continues.
-            messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
-            break;
-          case "tool_use":
-            messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
-            messages.push({ role: "user", content: this.runTools(msg.content, tz, convId, userTurn.id) });
-            break;
-          case "end_turn":
-          case "stop_sequence":
-            status = "completed";
-            finished = true;
-            break;
-          case "max_tokens":
-            note = "\n\n_(Cut off at the length limit. Ask me to continue.)_";
-            finished = true;
-            break;
-          case "refusal":
-            if (!answer.trim()) say("Sorry, I can't help with that one.");
-            finished = true;
-            break;
-          default:
-            finished = true;
+        if (answer && !answer.endsWith("\n")) {
+          answer += "\n\n";
+          emit({ type: "text", text: "\n\n" });
+        }
+
+        for await (const chunk of stream) {
+          if (chunk.promptFeedback?.blockReason) blocked = true;
+          const cand = chunk.candidates?.[0];
+          if (!cand) continue;
+          for (const p of cand.content?.parts ?? []) {
+            parts.push(p);
+            if (p.text && !p.thought) {
+              text += p.text;
+              emit({ type: "text", text: p.text });
+            }
+            if (p.toolCall) queriesOf(p.toolCall.args).forEach(search);
+            if (p.functionCall?.name === "recall_memory") {
+              emit({ type: "status", kind: "recall", detail: describeRecall(p.functionCall.args), args: p.functionCall.args });
+            }
+          }
+          if (cand.groundingMetadata) meta = cand.groundingMetadata;
+          if (cand.finishReason) finish = cand.finishReason;
+        }
+
+        // Grounding arrives with the end of the response: record queries/sources, place citations.
+        (meta?.webSearchQueries ?? []).forEach(search);
+        for (const c of meta?.groundingChunks ?? []) {
+          if (c.web?.uri && !read.has(c.web.uri)) read.set(c.web.uri, { url: c.web.uri, title: c.web.title ?? c.web.uri });
+        }
+        if (meta?.searchEntryPoint?.renderedContent) suggestions = meta.searchEntryPoint.renderedContent;
+        answer += placeCitations(text, meta, cited);
+
+        const calls = parts.filter((p) => p.functionCall);
+        if (calls.length) {
+          contents.push({ role: "model", parts });
+          contents.push({ role: "user", parts: calls.map((p) => this.runTool(p, tz, convId, userTurn.id)) });
+          continue;
+        }
+
+        finished = true;
+        if (blocked || finish === FinishReason.SAFETY || finish === FinishReason.PROHIBITED_CONTENT || finish === FinishReason.BLOCKLIST) {
+          if (!answer.trim()) answer = "Sorry, I can't help with that one.";
+        } else if (finish === FinishReason.MAX_TOKENS) {
+          note = "\n\n_(Cut off at the length limit. Ask me to continue.)_";
+        } else if (finish === FinishReason.STOP || finish === undefined) {
+          status = text.trim() || answer.trim() ? "completed" : "incomplete";
         }
       }
       if (!finished) note = "\n\n_(I hit my step limit for one answer before finishing. Ask me to continue.)_";
@@ -274,12 +286,14 @@ export class Agent {
       }
     }
 
-    if (note) say(note);
+    answer += note;
+    emit({ type: "final", text: answer });
 
-    // Only what the answer cited counts as evidence; what it merely read is kept apart.
+    // Only what the answer cited counts as evidence; what was merely read is kept apart.
     const citedUrls = new Set(cited.map((s) => s.url));
-    const retrieved = [...seen.values()].filter((s) => !citedUrls.has(s.url)).slice(0, 10);
+    const retrieved = [...read.values()].filter((s) => !citedUrls.has(s.url)).slice(0, 10);
     if (cited.length || retrieved.length) emit({ type: "sources", cited, retrieved });
+    if (suggestions) emit({ type: "suggestions", html: suggestions });
 
     const assistantTurn = this.store.addTurn({
       conversationId: convId,
@@ -292,8 +306,9 @@ export class Agent {
       sources: cited,
       retrieved,
       searches,
+      searchSuggestions: suggestions || undefined,
       // Only completed answers become baselines for "has anything changed?".
-      extraction: status === "completed" && answer.trim() ? "pending" : undefined,
+      extraction: status === "completed" ? "pending" : undefined,
     });
     emit({ type: "done", turnId: assistantTurn.id, status, ms: Date.now() - started, searches: searches.length });
 
@@ -301,21 +316,14 @@ export class Agent {
     if (assistantTurn.extraction === "pending") void this.extract(assistantTurn.id, isNew);
   }
 
-  private runTools(content: ContentBlock[], tz: string, convId: string, userTurnId: string): Anthropic.Beta.BetaToolResultBlockParam[] {
-    const calls = content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
-    return calls.map((call) => {
-      if (call.name !== "recall_memory") {
-        return { type: "tool_result", tool_use_id: call.id, is_error: true, content: `Unknown tool ${call.name}` };
-      }
-      const parsed = RecallInput.safeParse(call.input);
-      if (!parsed.success) {
-        return { type: "tool_result", tool_use_id: call.id, is_error: true, content: `Invalid input: ${parsed.error.message}` };
-      }
-      const result = recall(this.store, parsed.data, tz, {
-        currentConversationId: convId,
-        excludeTurnIds: new Set([userTurnId]),
-      });
-      return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) };
+  private runTool(part: Part, tz: string, convId: string, userTurnId: string): Part {
+    const call = part.functionCall!;
+    const reply = (response: Record<string, unknown>): Part => ({ functionResponse: { id: call.id, name: call.name, response } });
+    if (call.name !== "recall_memory") return reply({ error: `Unknown tool ${call.name}` });
+    const parsed = RecallInput.safeParse(call.args ?? {});
+    if (!parsed.success) return reply({ error: `Invalid input: ${parsed.error.message}` });
+    return reply({
+      output: recall(this.store, parsed.data, tz, { currentConversationId: convId, excludeTurnIds: new Set([userTurnId]) }),
     });
   }
 
@@ -331,7 +339,6 @@ export class Agent {
     const attempts = (turn.extractionAttempts ?? 0) + 1;
     try {
       const x = await extractFacts(this.client, question.text, turn.text, turn.sources ?? []);
-      if (!x) throw new Error("extractor returned no parsed output");
       this.store.updateTurn(turnId, { facts: x.facts, entities: x.entities, decisions: x.decisions, extraction: "done", extractionAttempts: attempts });
       const conv = this.store.getConversation(turn.conversationId);
       if (x.title && conv && (setTitle || conv.title === question.text.slice(0, 60))) this.store.setTitle(conv.id, x.title);
@@ -357,10 +364,12 @@ function describeRecall(input: unknown): string {
 }
 
 export function errorMessage(err: unknown): string {
-  if (err instanceof Anthropic.AuthenticationError) return "Invalid or missing ANTHROPIC_API_KEY.";
-  if (err instanceof Anthropic.RateLimitError) return "Rate limited by the model provider. Try again in a moment.";
-  if (err instanceof Anthropic.APIError) return `Model API error ${err.status ?? ""}: ${err.message}`;
-  const msg = err instanceof Error ? err.message : String(err);
-  if (/authentication method/i.test(msg)) return "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key.";
-  return msg;
+  if (err instanceof MissingKeyError) return err.message;
+  if (err instanceof ApiError) {
+    if (err.status === 400 && /api key/i.test(err.message)) return "Invalid GEMINI_API_KEY.";
+    if (err.status === 401 || err.status === 403) return "GEMINI_API_KEY was rejected (invalid key or no access to this model).";
+    if (err.status === 429) return "Rate limited by the Gemini API. Try again in a moment.";
+    return `Gemini API error ${err.status}: ${err.message}`;
+  }
+  return err instanceof Error ? err.message : String(err);
 }

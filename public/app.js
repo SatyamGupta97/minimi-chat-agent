@@ -65,13 +65,14 @@ function addUser(text, at) {
 function addAssistant() {
   const div = document.createElement("div");
   div.className = "msg assistant";
-  div.innerHTML = `<div class="status"></div><div class="answer"></div><div class="sources"></div><div class="meta"></div>`;
+  div.innerHTML = `<div class="status"></div><div class="answer"></div><div class="sources"></div><div class="suggestions-box"></div><div class="meta"></div>`;
   els.messages.append(div);
   return {
     root: div,
     status: div.querySelector(".status"),
     answer: div.querySelector(".answer"),
     sources: div.querySelector(".sources"),
+    suggestions: div.querySelector(".suggestions-box"),
     meta: div.querySelector(".meta"),
   };
 }
@@ -97,6 +98,19 @@ function renderSources(el, cited = [], retrieved = []) {
     d.append(box);
     el.append(d);
   }
+}
+
+// Google Search Suggestions must be displayed with grounded answers, unmodified.
+// Google supplies them as HTML+CSS, so render them in a sandboxed iframe: no
+// scripts, no access to this page, links open in a new tab.
+function renderSuggestions(el, html) {
+  if (!html) return;
+  const f = document.createElement("iframe");
+  f.sandbox = "allow-popups allow-popups-to-escape-sandbox";
+  f.title = "Google Search Suggestions";
+  f.srcdoc = `<base target="_blank">${html}`;
+  f.onload = () => { try { f.style.height = `${f.contentDocument?.body?.scrollHeight || 60}px`; } catch { /* cross-origin: keep default */ } };
+  el.replaceChildren(f);
 }
 
 const STATUS_LABEL = { incomplete: "Answer incomplete", failed: "Answer failed", cancelled: "Stopped" };
@@ -164,9 +178,13 @@ async function send(text) {
             answer += e.text;
             if (!raf) raf = requestAnimationFrame(paint);
             break;
-          case "reset":
-            answer = "";
+          case "final":
+            // Server's authoritative text, with citation markers placed from grounding data.
+            answer = e.text;
             paint();
+            break;
+          case "suggestions":
+            renderSuggestions(view.suggestions, e.html);
             break;
           case "sources":
             sources = e.cited;
@@ -243,6 +261,7 @@ async function openConversation(id) {
       v.status.remove();
       v.answer.innerHTML = renderMarkdown(t.text, t.sources);
       renderSources(v.sources, t.sources, t.retrieved);
+      renderSuggestions(v.suggestions, t.searchSuggestions);
       if (STATUS_LABEL[t.status]) v.meta.textContent = STATUS_LABEL[t.status];
     }
   }

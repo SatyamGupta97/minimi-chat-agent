@@ -12,10 +12,10 @@
  * should (and not when it shouldn't), cite, finish, and how long it took.
  * Facts change, so the checks don't assert today's prices.
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createClient } from "../src/config.ts";
 import { Agent, type AgentEvent } from "../src/agent.ts";
 import { Store, type Fact, type Source } from "../src/store.ts";
 import { localDate } from "../src/time.ts";
@@ -185,11 +185,11 @@ const SCENARIOS: Scenario[] = [
 async function run(s: Scenario): Promise<Run> {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "eval-")), "m.json"));
   s.history.forEach((f) => seed(store, f));
-  const agent = new Agent(new Anthropic(), store);
+  const agent = new Agent(createClient(), store);
   const r: Run = { text: "", status: "?", ms: 0, searches: [], recalls: [], cited: 0 };
   await agent.runTurn({ message: s.ask, tz, now }, (e: AgentEvent) => {
     if (e.type === "text") r.text += e.text;
-    else if (e.type === "reset") r.text = "";
+    else if (e.type === "final") r.text = e.text;
     else if (e.type === "status" && e.kind === "search") r.searches.push(e.query);
     else if (e.type === "status" && e.kind === "recall") r.recalls.push(e.args as Run["recalls"][number]);
     else if (e.type === "sources") r.cited = e.cited.length;

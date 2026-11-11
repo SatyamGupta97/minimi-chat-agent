@@ -2,9 +2,8 @@
  * Terminal client: `npm run ask -- "your question"` (add --c <conversationId> to continue one).
  * Shares the same memory file as the web UI.
  */
-import Anthropic from "@anthropic-ai/sdk";
 import { Agent } from "../src/agent.ts";
-import { config } from "../src/config.ts";
+import { config, createClient } from "../src/config.ts";
 import { Store } from "../src/store.ts";
 
 const args = process.argv.slice(2);
@@ -16,10 +15,10 @@ if (!message) {
   process.exit(1);
 }
 
-const agent = new Agent(new Anthropic(), new Store(config.dataFile));
+const agent = new Agent(createClient(), new Store(config.dataFile));
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 await agent.runTurn({ conversationId, message, tz }, (e) => {
-  if (e.type === "text") process.stdout.write(e.text);
+  if (e.type === "final") process.stdout.write(`${e.text}\n`);
   else if (e.type === "status" && e.kind === "search") process.stderr.write(`\x1b[2m[search] ${e.query}\x1b[0m\n`);
   else if (e.type === "status" && e.kind === "recall") process.stderr.write(`\x1b[2m[memory] ${e.detail}\x1b[0m\n`);
   else if (e.type === "sources") e.cited.forEach((s, i) => process.stdout.write(`${i === 0 ? "\n\n" : ""}[${i + 1}] ${s.title} - ${s.url}\n`));

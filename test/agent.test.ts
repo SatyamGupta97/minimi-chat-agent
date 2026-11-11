@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import type Anthropic from "@anthropic-ai/sdk";
+import type { GoogleGenAI } from "@google/genai";
 import { Agent } from "../src/agent.ts";
 import { exchanges, recall } from "../src/recall.ts";
 import { Store } from "../src/store.ts";
@@ -56,8 +56,8 @@ test("incomplete answers are flagged in recall, completed ones are not", () => {
   assert.equal(hits.find((h) => h.you_asked === "CRM pricing again")?.answer_status, undefined);
 });
 
-function fakeClient(parse: () => Promise<unknown>): Anthropic {
-  return { messages: { parse } } as unknown as Anthropic;
+function fakeClient(generateContent: () => Promise<unknown>): GoogleGenAI {
+  return { models: { generateContent } } as unknown as GoogleGenAI;
 }
 
 function pendingTurn(s: Store) {
@@ -72,12 +72,12 @@ test("pending extractions are recovered on startup", async () => {
   const a = pendingTurn(s);
   const agent = new Agent(
     fakeClient(async () => ({
-      parsed_output: {
+      text: JSON.stringify({
         title: "Postgres hosting",
         entities: ["Neon"],
         decisions: [],
-        facts: [{ subject: "Neon", attribute: "Launch price", value: "$19/mo", as_of: null, source_url: null }],
-      },
+        facts: [{ subject: "Neon", attribute: "Launch price", value: "$19/mo", as_of: null, source: null }],
+      }),
     })),
     s,
   );
@@ -104,4 +104,24 @@ test("extraction retries, then gives up after 3 attempts", async () => {
   } finally {
     console.warn = warn;
   }
+});
+
+test("citations are placed after grounded segments, numbered stably across responses", async () => {
+  const { placeCitations } = await import("../src/agent.ts");
+  const cited: { url: string; title: string }[] = [];
+  const text = "Neon costs €19/mo. Supabase costs $25/mo.";
+  const meta = {
+    groundingChunks: [{ web: { uri: "https://a", title: "neon.com" } }, { web: { uri: "https://b", title: "supabase.com" } }],
+    groundingSupports: [
+      // By segment text.
+      { segment: { text: "Neon costs €19/mo." }, groundingChunkIndices: [0] },
+      // By UTF-8 byte offset only ("€" is 3 bytes, so char and byte offsets differ).
+      { segment: { endIndex: Buffer.byteLength(text) }, groundingChunkIndices: [1, 0] },
+    ],
+  };
+  assert.equal(placeCitations(text, meta, cited), "Neon costs €19/mo.[1] Supabase costs $25/mo.[2][1]");
+  // A later response reuses numbers for sources already cited.
+  const meta2 = { groundingChunks: [{ web: { uri: "https://b", title: "supabase.com" } }], groundingSupports: [{ segment: { text: "Still $25." }, groundingChunkIndices: [0] }] };
+  assert.equal(placeCitations("Still $25.", meta2, cited), "Still $25.[2]");
+  assert.equal(cited.length, 2);
 });

@@ -1,14 +1,13 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { readFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { extname, join, normalize } from "node:path";
 import { Agent, errorMessage, type AgentEvent } from "./agent.ts";
-import { config } from "./config.ts";
+import { config, createClient } from "./config.ts";
 import { Store } from "./store.ts";
 import { isValidTimeZone } from "./time.ts";
 
 const store = new Store(config.dataFile);
-const agent = new Agent(new Anthropic(), store);
+const agent = new Agent(createClient(), store);
 
 const STATIC: Record<string, string> = {
   "/": "public/index.html",
@@ -122,9 +121,9 @@ const server = createServer(async (req, res) => {
 
 server.listen(config.port, () => {
   console.log(`\n  Chat agent running → http://localhost:${config.port}`);
-  console.log(`  model: ${config.chatModel} (effort ${config.chatEffort}) · memory: ${config.dataFile}`);
-  if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
-    console.warn("  ⚠ ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key.\n");
+  console.log(`  model: ${config.chatModel} (thinking ${config.chatThinking.toLowerCase()}) · memory: ${config.dataFile}`);
+  if (!config.apiKey) {
+    console.warn("  ⚠ GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.\n");
     return;
   }
   // Finish any fact extraction a previous run was interrupted in the middle of.

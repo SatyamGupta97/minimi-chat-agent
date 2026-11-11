@@ -61,6 +61,8 @@ export interface Turn {
   /** Pages the search returned but the answer did not cite. Context only, not evidence. */
   retrieved?: Source[];
   searches?: string[];
+  /** Google Search Suggestions HTML shown with a grounded answer (required by the Search grounding terms). */
+  searchSuggestions?: string;
   facts?: Fact[];
   /** Products/companies/things the exchange was about, e.g. ["Neon", "Supabase"]. */
   entities?: string[];

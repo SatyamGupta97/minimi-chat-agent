@@ -1,5 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { type GoogleGenAI, ThinkingLevel } from "@google/genai";
 import { z } from "zod";
 import { config } from "./config.ts";
 import type { Fact, Source } from "./store.ts";
@@ -28,32 +27,33 @@ const Extraction = z.object({
         attribute: z.string().describe("What about it, e.g. 'Launch plan price'"),
         value: z.string().describe("The stated value, verbatim where possible, e.g. '$19/month'"),
         as_of: z.string().nullable().describe("Date the fact applies from if the answer states one, else null"),
-        source_url: z.string().nullable().describe("URL the answer cited for this fact, else null"),
+        source: z.string().nullable().describe("Title/domain of the numbered source the answer cited for this fact, else null"),
       }),
     )
     .describe("Time-sensitive, verifiable claims made in the answer (prices, limits, features, releases, dates, versions). Empty if none."),
 });
 
+const SCHEMA = z.toJSONSchema(Extraction);
+
 export async function extractFacts(
-  client: Anthropic,
+  client: GoogleGenAI,
   question: string,
   answer: string,
   sources: Source[],
-): Promise<{ title: string; facts: Fact[]; entities: string[]; decisions: string[] } | null> {
+): Promise<{ title: string; facts: Fact[]; entities: string[]; decisions: string[] }> {
   const sourceList = sources.map((s, i) => `[${i + 1}] ${s.title} - ${s.url}`).join("\n");
-  const res = await client.messages.parse({
+  const res = await client.models.generateContent({
     model: config.extractModel,
-    max_tokens: 4000,
-    output_config: { format: zodOutputFormat(Extraction), effort: "low" },
-    messages: [
-      {
-        role: "user",
-        content: `Extract a short title, the entities discussed, the user's decisions/context, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
-      },
-    ],
+    contents: `Extract a short title, the entities discussed, the user's decisions/context, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
+    config: {
+      responseMimeType: "application/json",
+      responseJsonSchema: SCHEMA,
+      thinkingConfig: { thinkingLevel: ThinkingLevel.MINIMAL },
+    },
   });
-  const out = res.parsed_output;
-  if (!out) return null;
+  // Validate: the schema constrains generation, zod guards what we store.
+  const out = Extraction.parse(JSON.parse(res.text ?? ""));
+  const urlFor = (n: string | null) => sources.find((s) => n && (s.title === n || s.url === n))?.url ?? null;
   return {
     title: out.title.trim().slice(0, 80),
     entities: out.entities.slice(0, 30),
@@ -63,7 +63,7 @@ export async function extractFacts(
       attribute: f.attribute,
       value: f.value,
       asOf: f.as_of,
-      sourceUrl: f.source_url,
+      sourceUrl: urlFor(f.source) ?? f.source,
     })),
   };
 }
