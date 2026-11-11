@@ -135,21 +135,26 @@ export class OpenAIProvider implements Provider {
   }
 
   describeError(err: unknown): string | undefined {
+    // Out of credit arrives as a 429 or as an in-stream error; either way it's billing, not a rate limit.
+    if (isOutOfCredit(err)) return "This OpenAI key has no credits left. Add credits at platform.openai.com → Settings → Billing, or use another key.";
     if (err instanceof OpenAI.AuthenticationError) return "Your OpenAI API key was rejected. Check the key in .env.";
     if (err instanceof OpenAI.PermissionDeniedError) return "This OpenAI key can't use this model or web search.";
     if (err instanceof OpenAI.RateLimitError) {
       const wait = this.retryAfterMs(err);
-      return /quota/i.test(err.message)
-        ? "This OpenAI key is out of quota (check billing)."
-        : `Rate limited by OpenAI${wait ? `; retry in ~${Math.ceil(wait / 1000)}s` : ""}.`;
+      return `Rate limited by OpenAI${wait ? `; retry in ~${Math.ceil(wait / 1000)}s` : ""}.`;
     }
     if (err instanceof OpenAI.APIError) return `OpenAI API error ${err.status ?? ""}: ${err.message}`;
     return undefined;
   }
 
   retryAfterMs(err: unknown): number | undefined {
-    if (!(err instanceof OpenAI.RateLimitError)) return undefined;
+    if (!(err instanceof OpenAI.RateLimitError) || isOutOfCredit(err)) return undefined; // waiting won't add credit
     const s = Number(err.headers?.get?.("retry-after") ?? NaN);
     return Number.isFinite(s) ? s * 1000 : 60_000;
   }
+}
+
+function isOutOfCredit(err: unknown): boolean {
+  const e = err as { code?: unknown; message?: unknown };
+  return /credit_balance_exhausted|insufficient_quota/.test(String(e?.code ?? "")) || /no credits remaining|exceeded your current quota/i.test(String(e?.message ?? ""));
 }
