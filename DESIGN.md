@@ -32,7 +32,8 @@ POST /api/chat (SSE) → Agent.runTurn
 - **Prove change, don't narrate it.** "Has pricing changed?" becomes a per-claim diff: the stored value against a value cited today. No change is claimed without both sides; a missing baseline is "unknown". An extracted fact keeps a source only if that source's `[n]` sits next to it.
 - **Only finished answers are memory.** Turns are `completed | incomplete | failed | cancelled`; only an explicit vendor "stop" counts as completed. Answers link to questions by `replyTo`, not position.
 - **Recalled memory is untrusted.** Past messages are user-written, and past answers were shaped by web pages. They're fenced, with `<` escaped, and treated as data, never instructions.
-- **Vendor-neutral.** SDKs are imported only in `src/providers/`: one streamed answer, one JSON call, optional embeddings, error text. Vectors are tagged with their model and re-embedded after a vendor switch. Without an embedding API, memory falls back to keywords and nothing else changes.
+- **Vendor-neutral.** SDKs are imported only in `src/providers/`: one streamed answer, one JSON call, optional embeddings, error text. Embeddings can come from a second key (e.g. Groq chat + free Gemini embeddings). Vectors are tagged with their model and re-embedded after a switch. Without any embedding API, memory falls back to keywords.
+- **"Related" is measured by contrast, not a fixed cut-off.** On real Gemini vectors a true paraphrase match scored 0.605 while "thanks!" scored up to 0.59 against every chat. So a match must stand out from the message's similarity to the user's other chats (plus fixed reference texts when history is short). The rule was picked by searching recorded real similarities (kept as a test fixture) for what classifies every pair correctly.
 
 ## Considered and rejected
 

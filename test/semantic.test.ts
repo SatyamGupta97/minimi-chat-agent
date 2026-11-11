@@ -6,7 +6,8 @@ import { test } from "node:test";
 import { lookupMemory } from "../src/memory-context.ts";
 import { placeUrlCitations } from "../src/providers/openai.ts";
 import type { Provider } from "../src/providers/types.ts";
-import { embedMissing, queryVector } from "../src/semantic.ts";
+import { readFileSync } from "node:fs";
+import { embedMissing, queryVector, relatedByContrast } from "../src/semantic.ts";
 import { Store } from "../src/store.ts";
 
 const tz = "UTC";
@@ -38,7 +39,12 @@ function storeWithChats() {
   chat("broken", "Best pasta recipe?", "", "failed");
   return s;
 }
-const opts = (q?: { model: string; vector: number[] }) => ({ currentConversationId: "new", excludeTurnIds: new Set<string>(), queryVector: q });
+// In the toy space the reference texts are unrelated to everything: similarity 0.
+const opts = (q?: { model: string; vector: number[] }) => ({
+  currentConversationId: "new",
+  excludeTurnIds: new Set<string>(),
+  queryVector: q && { ...q, referenceSims: [0, 0, 0, 0, 0, 0] },
+});
 
 test("embedMissing embeds completed exchanges once, and again after a model switch", async () => {
   const s = storeWithChats();
@@ -99,4 +105,32 @@ test("OpenAI citations: inline links become [n]; bare annotations get [n] at the
     citations,
   );
   assert.equal(out, "Neon Launch is $19/mo[1]. Supabase Pro is $25/mo.[2]");
+});
+
+// Real gemini-embedding-001 similarities, recorded from the calibration run (see src/semantic.ts).
+const REAL = JSON.parse(readFileSync(new URL("./fixtures-gemini-similarity.json", import.meta.url), "utf8")) as {
+  q: string; want: string | null; chats: string[]; sims: number[]; refs: number[];
+}[];
+
+test("real Gemini similarities: every intended match found, every unrelated message rejected (5 chats)", () => {
+  for (const x of REAL) {
+    const related = x.chats.filter((_, i) => relatedByContrast(x.sims, x.refs)[i]);
+    assert.deepEqual(related, x.want ? [x.want] : [], x.q);
+  }
+});
+
+test("real Gemini similarities with only 1–3 past chats: at least 90% of judgments correct", () => {
+  let right = 0;
+  let total = 0;
+  for (const x of REAL)
+    for (let mask = 1; mask < 1 << x.chats.length; mask++) {
+      const idx = x.chats.map((_, i) => i).filter((i) => mask & (1 << i));
+      if (idx.length > 3) continue;
+      const ok = relatedByContrast(idx.map((i) => x.sims[i]), x.refs);
+      idx.forEach((i, k) => {
+        total++;
+        if (ok[k] === (x.chats[i] === x.want)) right++;
+      });
+    }
+  assert.ok(right / total >= 0.9, `${right}/${total}`);
 });

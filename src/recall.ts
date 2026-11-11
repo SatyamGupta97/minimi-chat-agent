@@ -1,5 +1,6 @@
 import type { Conversation, Fact, Source, Store, Turn } from "./store.ts";
 import { humanDateTime, localDate } from "./time.ts";
+import { relatedByContrast } from "./semantic.ts";
 import { cosine } from "./vector.ts";
 
 /**
@@ -143,7 +144,7 @@ export function recall(
      * Meaning-based matching (hybrid with keywords): the message's vector, the model
      * that produced it (only same-model vectors compare), and the similarity floor.
      */
-    semantic?: { vector: number[]; model: string; min: number };
+    semantic?: { vector: number[]; model: string; referenceSims: number[] };
   } = {},
 ): RecallResult {
   const all = exchanges(store).filter(
@@ -198,10 +199,17 @@ export function recall(
       if (emb?.model === sem.model) sim.set(e, cosine(sem.vector, emb.vector));
     }
   }
+  // Which exchanges are related by meaning: those that stand out (see relatedByContrast).
+  const byMeaning = new Set<Exchange>();
+  if (sem && sim.size) {
+    const entries = [...sim.entries()];
+    const ok = relatedByContrast(entries.map(([, v]) => v), sem.referenceSims);
+    entries.forEach(([e], i) => ok[i] && byMeaning.add(e));
+  }
   // Topic-only searches: keep what matches by keywords (on what it's about) OR by meaning.
   // A message with no topic words at all ("what did I ask you?") filters nothing: newest first.
   if (!q.from && !q.to && qTerms.length) {
-    scored = scored.filter((s) => (s.score > 0 && s.about >= (opts.minAboutTerms ?? 0)) || (sim.get(s.e) ?? 0) >= (sem?.min ?? Infinity));
+    scored = scored.filter((s) => (s.score > 0 && s.about >= (opts.minAboutTerms ?? 0)) || byMeaning.has(s.e));
   }
   // Hybrid rank: keyword relevance plus a strong weight on meaning.
   for (const s of scored) s.score += 8 * (sim.get(s.e) ?? 0);

@@ -19,9 +19,16 @@ Requires Node 20.12+. **Any one LLM API key works.** The vendor is detected from
 | Paste a key from | Looks like | Chat model + web search | Memory search | Notes |
 |---|---|---|---|---|
 | **OpenAI** ⭐ | `sk-…` | `gpt-6.1-sol` + web search | meaning + keywords | |
-| **Gemini** ⭐ | `AIza…` | `gemini-3.8-flash` + Google Search grounding | meaning + keywords | Search grounding needs billing enabled on the key's project |
-| **Claude** | `sk-ant-…` | `claude-opus-5-5` + web search | keywords | Enable web search for your org in the Anthropic Console |
-| **Groq** | `gsk_…` | `openai/gpt-oss-120b` + browser search | keywords | Works on a free key, but the free tier is tight (~8K tokens/min, 200K/day per model) |
+| **Gemini** ⭐ | `AIza…` / `AQ.…` | `gemini-3.8-flash` + Google Search grounding | meaning + keywords | Search grounding needs billing enabled on the key's project |
+| **Claude** | `sk-ant-…` | `claude-opus-5-5` + web search | keywords (meaning + keywords with `EMBEDDING_API_KEY`) | Enable web search for your org in the Anthropic Console |
+| **Groq** | `gsk_…` | `openai/gpt-oss-120b` + browser search | keywords (meaning + keywords with `EMBEDDING_API_KEY`) | Works on a free key, but the free tier is tight (~8K tokens/min, 200K/day per model) |
+
+**Mix vendors:** chat on one key, meaning-based memory on another. For example, chat with a free Groq key plus a free Gemini key just for embeddings:
+
+```bash
+LLM_API_KEY=gsk_…          # chat + web search
+EMBEDDING_API_KEY=AIza…    # embeddings only (Gemini or OpenAI); Gemini embeddings work on a free key
+```
 
 Vendor-specific variables (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`) work too, and `LLM_PROVIDER` forces a vendor. With several keys set, OpenAI or Gemini is preferred. The startup log says which memory search is active. Everything else behaves the same on every vendor: memory, dates, citations and evidence rules live in vendor-neutral code, and each vendor is a small adapter in `src/providers/`.
 

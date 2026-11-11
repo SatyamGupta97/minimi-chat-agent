@@ -1,15 +1,14 @@
 import { refersToPast, resolveDates } from "./dates.ts";
 import { recall, type RecallQuery, type RecallResult } from "./recall.ts";
-import { minSimilarity } from "./semantic.ts";
 import type { Store } from "./store.ts";
 
 type LookupOpts = {
   currentConversationId: string;
   excludeTurnIds: Set<string>;
   /** The message's embedding, when the vendor has one: enables matching by meaning. */
-  queryVector?: { model: string; vector: number[] };
+  queryVector?: { model: string; vector: number[]; referenceSims: number[] };
 };
-const semanticOf = (o: LookupOpts) => (o.queryVector ? { ...o.queryVector, min: minSimilarity(o.queryVector.model) } : undefined);
+const semanticOf = (o: LookupOpts) => o.queryVector;
 
 /**
  * Memory retrieval is done by the app, before the model runs. The model's

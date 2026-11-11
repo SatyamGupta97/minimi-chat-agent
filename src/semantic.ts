@@ -1,7 +1,8 @@
 import type { Provider } from "./providers/types.ts";
 import { type Exchange, exchanges } from "./recall.ts";
 import type { Store } from "./store.ts";
-export { cosine } from "./vector.ts";
+import { cosine } from "./vector.ts";
+export { cosine };
 
 /**
  * Meaning-based memory search, for vendors with an embedding API.
@@ -18,17 +19,68 @@ export { cosine } from "./vector.ts";
  */
 
 /**
- * Minimum cosine similarity for a past exchange to count as related. Each model
- * has its own scale, so these are per model. They are starting estimates;
- * MEMORY_MIN_SIMILARITY overrides, and the eval is where to tune them.
+ * When does a past exchange count as "related" by meaning?
+ *
+ * Not by a fixed cosine cut-off. On real gemini-embedding-001 vectors (recorded
+ * in test/fixtures-gemini-similarity.json), a true paraphrase match ("packing
+ * tips for my vacation" vs a "Goa trip in December" chat) scored 0.605, while
+ * "thanks, that was helpful!" scored 0.55–0.59 against EVERY chat; the ranges
+ * overlap. What separates them is contrast: a real match stands out from the
+ * other things the message is compared with; filler matches everything equally.
+ *
+ * Rule (chosen by searching that data for what classifies every pair correctly):
+ * - with ≥4 candidate exchanges: beat their median by 0.07 (the middle of the
+ *   0.055–0.09 range that got all 45 labelled pairs right);
+ * - with fewer, the median of 1–3 numbers means little, so the baseline also
+ *   includes fixed unrelated reference texts, with a 0.04 margin: on every 1–3
+ *   chat subset it missed no intended match (87–95% overall; the errors are
+ *   extra "possibly related" chats, which the model is told to ignore if
+ *   irrelevant, whereas a miss loses the memory). The live 1-chat
+ *   "vacation → Goa trip" case had a lift of 0.041;
+ * - and be within 0.06 of the best match (stops a loosely related runner-up).
+ * MEMORY_SIMILARITY_MARGIN overrides the margin.
  */
-const MIN_SIMILARITY: Record<string, number> = {
-  "text-embedding-3-small@512": 0.4,
-  "gemini-embedding-001@768": 0.65,
+const MARGIN_OVERRIDE = Number(process.env.MEMORY_SIMILARITY_MARGIN) > 0 ? Number(process.env.MEMORY_SIMILARITY_MARGIN) : undefined;
+export const NEAR_TOP = 0.06;
+
+export const REFERENCE_TEXTS = [
+  "Chat: Weather\nQuestion: Will it rain in the city tomorrow?\nAnswer: Light showers expected in the afternoon.",
+  "Chat: Recipe\nQuestion: How do I make a simple pasta sauce?\nAnswer: Garlic, olive oil, tomatoes, simmer 20 minutes.",
+  "Chat: Football\nQuestion: Who won the match last night?\nAnswer: The home team won 2-1.",
+  "Chat: Homework\nQuestion: Solve 3x + 5 = 20.\nAnswer: x = 5.",
+  "Chat: Movies\nQuestion: Recommend a good thriller movie.\nAnswer: Try a classic suspense film.",
+  "Chat: Bike repair\nQuestion: How do I fix a flat bicycle tire?\nAnswer: Remove the tube, patch it, reinflate.",
+];
+const referenceCache = new Map<string, Promise<number[][]>>();
+
+/** Reference vectors for a model, embedded once per process. */
+function referenceVectors(provider: Provider, model: string): Promise<number[][]> {
+  let p = referenceCache.get(model);
+  if (!p) {
+    p = provider.embed!(REFERENCE_TEXTS, "document");
+    p.catch(() => referenceCache.delete(model)); // retry next time
+    referenceCache.set(model, p);
+  }
+  return p;
+}
+
+const median = (xs: number[]) => {
+  const a = [...xs].sort((x, y) => x - y);
+  const mid = a.length >> 1;
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
 };
-export function minSimilarity(model: string): number {
-  const override = Number(process.env.MEMORY_MIN_SIMILARITY);
-  return Number.isFinite(override) && override > 0 ? override : (MIN_SIMILARITY[model] ?? 0.6);
+
+/**
+ * Which candidates are related, given their similarities to the message and the
+ * message's similarities to the reference texts. Exported for tests.
+ */
+export function relatedByContrast(candidateSims: number[], referenceSims: number[]): boolean[] {
+  if (!candidateSims.length) return [];
+  const many = candidateSims.length >= 4;
+  const base = many ? median(candidateSims) : median([...candidateSims, ...referenceSims]);
+  const margin = MARGIN_OVERRIDE ?? (many ? 0.07 : 0.04);
+  const top = Math.max(...candidateSims);
+  return candidateSims.map((s) => s >= base + margin && s >= top - NEAR_TOP);
 }
 
 /** What an exchange is about, as one text to embed. */
@@ -71,16 +123,22 @@ export async function embedMissing(provider: Provider, store: Store, batch = 32)
  * compare against, the vendor has no embeddings, or the call is slow or fails.
  * Memory must never block or break an answer.
  */
-export async function queryVector(provider: Provider, store: Store, message: string, timeoutMs = 2500): Promise<{ model: string; vector: number[] } | undefined> {
+export async function queryVector(
+  provider: Provider,
+  store: Store,
+  message: string,
+  timeoutMs = 2500,
+): Promise<{ model: string; vector: number[]; referenceSims: number[] } | undefined> {
   const model = provider.embeddingModel;
   if (!provider.embed || !model) return undefined;
   if (!store.allTurns().some((t) => t.embedding?.model === model)) return undefined; // nothing embedded yet: skip the call
   try {
-    const vectors = await Promise.race([
-      provider.embed([message], "query"),
+    const [vectors, refs] = await Promise.race([
+      Promise.all([provider.embed([message], "query"), referenceVectors(provider, model)]),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error("embedding timed out")), timeoutMs)),
     ]);
-    return vectors[0]?.length ? { model, vector: vectors[0] } : undefined;
+    const v = vectors[0];
+    return v?.length ? { model, vector: v, referenceSims: refs.map((r) => cosine(v, r)) } : undefined;
   } catch (e) {
     console.warn("[memory] query embedding skipped:", (e as Error).message);
     return undefined;

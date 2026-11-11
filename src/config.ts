@@ -17,7 +17,7 @@ const PREFERENCE = ["openai", "gemini", "anthropic", "groq"] as const;
 export function vendorOfKey(key: string): Exclude<ProviderName, "ollama"> | undefined {
   if (/^sk-ant-/.test(key)) return "anthropic";
   if (/^gsk_/.test(key)) return "groq";
-  if (/^AIza/.test(key)) return "gemini";
+  if (/^(AIza|AQ\.)/.test(key)) return "gemini"; // classic AIza… keys and Google AI Studio's newer AQ.… format
   if (/^sk-/.test(key)) return "openai"; // sk-proj-…, sk-svcacct-…, legacy sk-… (checked after sk-ant-)
   return undefined;
 }
@@ -72,7 +72,22 @@ export function selectProvider(env: NodeJS.ProcessEnv): { provider: ProviderName
   };
 }
 
+/**
+ * Optional separate key just for embeddings (meaning-based memory search), so
+ * chat can run on one vendor and embeddings on another, e.g. chat on Groq
+ * (no embedding API) with embeddings from a Gemini key. Only vendors with an
+ * embedding API qualify: Gemini (AIza…) or OpenAI (sk-…).
+ */
+export function selectEmbedding(env: NodeJS.ProcessEnv): { provider?: "gemini" | "openai"; apiKey: string; problem?: string } {
+  const key = env.EMBEDDING_API_KEY?.trim() ?? "";
+  if (!key) return { apiKey: "" };
+  const vendor = vendorOfKey(key);
+  if (vendor === "gemini" || vendor === "openai") return { provider: vendor, apiKey: key };
+  return { apiKey: "", problem: "EMBEDDING_API_KEY must be a Gemini (AIza… / AQ.…) or OpenAI (sk-…) key; other vendors have no embedding API. Ignoring it." };
+}
+
 const selected = selectProvider(process.env);
+const embedding = selectEmbedding(process.env);
 const defaults = DEFAULTS[selected.provider];
 const chatOverride = process.env.CHAT_MODEL;
 const extractOverride = process.env.EXTRACT_MODEL;
@@ -82,8 +97,11 @@ export const config = {
   provider: selected.provider,
   apiKey: selected.apiKey,
   /** Shown at startup: a key we couldn't place, or model overrides that belong to another vendor. */
+  /** Separate embeddings vendor, if EMBEDDING_API_KEY is set; otherwise the chat vendor embeds (if it can). */
+  embedding: embedding.provider ? { provider: embedding.provider, apiKey: embedding.apiKey } : undefined,
   warnings: [
     selected.problem,
+    embedding.problem,
     ignored.length ? `Ignoring ${ignored.join(", ")}: not a ${selected.provider} model (using ${selected.provider} defaults).` : undefined,
   ].filter((w): w is string => !!w),
   ollamaHost: process.env.OLLAMA_HOST ?? "http://localhost:11434",
