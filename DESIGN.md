@@ -7,8 +7,9 @@
 ```
 POST /api/chat (SSE) → Agent.runTurn
   1. save the question (memory even if the answer fails)
-  2. if the message refers to our past: resolve date phrases to local date ranges
-     (every reading if ambiguous) and look up those days, or the topic if there is no date
+  2. memory in code: profile + recent exchanges from other chats, always; if the message refers
+     to our past, resolve date phrases to exact local ranges (every reading if ambiguous) and
+     look those days up; otherwise pull in related past exchanges by topic
   3. one streamed model call: earlier turns + context (clock, calendar, past-chat index,
      recalled exchanges fenced as untrusted data) + message; its only tool is web search
   4. the adapter maps vendor citations to stable [n]; save the answer with status,
@@ -21,7 +22,13 @@ POST /api/chat (SSE) → Agent.runTurn
 **The hard part of the test set is memory plus time, not search.** "What did I ask on 3 November? Is it still right?" means resolving a date in the user's timezone, finding what was said, and re-checking each claim.
 
 - **Memory is the app's job, not a second tool.** The brief allows one tool. Code resolves "last Tuesday" (both readings when ambiguous), "3 November" or "the week before last" in the user's timezone, then retrieves with a hard date filter plus BM25 ranking over questions, entities, decisions and facts. Lookups run only when the message refers to our past, so "weather on Monday" and "Monday.com" don't trigger one. This saves a model round trip, and an empty lookup still reports what memory holds, so nothing is invented.
-- **It knows who you are in every chat.** Facts the user states about themselves (name, role, team size, preferences) are extracted in the background into a small profile, which every chat's context includes. Past exchanges, by contrast, are looked up only when asked about, because they're large and usually irrelevant.
+- **Memory works across chats, within a budget.** Every message carries four layers:
+  1. a profile of facts the user stated about themselves;
+  2. the latest exchanges from their other chats;
+  3. past exchanges that share a meaningful word with the message, matched automatically ("pack for my trip" brings back the Goa plan);
+  4. an exact date lookup when they point at the past.
+
+  Sending all history every turn would blow token budgets and dilute attention.
 - **Recalled memory is untrusted.** Past messages are user-written, and past answers were shaped by web pages. They are fenced (with `<` escaped), and the prompt treats them as data to report, never instructions to follow.
 - **Prove change, don't narrate it.** "Has pricing changed?" becomes a per-claim diff: the stored value against a value cited today. No change is claimed without both sides; a missing baseline is "unknown". An extracted fact keeps a source only if that source's `[n]` sits next to the fact.
 - **Only finished answers are evidence.** Turns are `completed | incomplete | failed | cancelled`. Only an explicit vendor "stop" counts as completed, and only completed answers become baselines. Answers link to questions by `replyTo`, not position.

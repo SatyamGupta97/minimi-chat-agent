@@ -3,7 +3,7 @@ import { extractFacts } from "./extract.ts";
 import { lookupMemory } from "./memory-context.ts";
 import { SYSTEM_PROMPT, turnContext } from "./prompt.ts";
 import type { HistoryItem, Provider, TurnSetup } from "./providers/types.ts";
-import { memoryDigest, userProfile } from "./recall.ts";
+import { memoryDigest, recentActivity, userProfile } from "./recall.ts";
 import type { Source, Store, Turn, TurnStatus } from "./store.ts";
 import { humanDateTime, temporalContext } from "./time.ts";
 
@@ -102,7 +102,12 @@ export class Agent {
     const setup: TurnSetup = {
       system: SYSTEM_PROMPT,
       history: history(prior, tz),
-      context: turnContext(temporalContext(now, tz), userProfile(this.store), memoryDigest(this.store, tz, convId), memory.text),
+      context: turnContext(
+        temporalContext(now, tz),
+        userProfile(this.store),
+        memoryDigest(this.store, tz, convId),
+        [recentActivity(this.store, tz, convId), memory.text].filter(Boolean).join("\n\n"),
+      ),
       message: `[sent ${humanDateTime(now, tz)}]\n${input.message}`,
       citations: {
         cite(s) {

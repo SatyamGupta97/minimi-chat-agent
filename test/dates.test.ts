@@ -124,3 +124,41 @@ test("more ways of pointing at earlier chats", () => {
   assert.ok(refersToPast("what did we talk about in our previous conversation?"));
   assert.ok(!refersToPast("what is my name?")); // answered from the profile, not a lookup
 });
+
+function store2() {
+  const s = new Store(join(mkdtempSync(join(tmpdir(), "rel-")), "m.json"));
+  const add = (conv: string, at: string, q: string, a: string, extra: Record<string, unknown> = {}, status: "completed" | "failed" = "completed") => {
+    const c = s.getConversation(conv) ?? s.createConversation(new Date(at), q.slice(0, 30), conv);
+    const u = s.addTurn({ conversationId: c.id, role: "user", text: q, at, tz });
+    s.addTurn({ conversationId: c.id, role: "assistant", replyTo: u.id, status, text: a, at, tz, ...extra });
+  };
+  add("crm", "2026-11-09T06:00:00Z", "Shortlist 5 CRM tools for my sales team", "HubSpot, Pipedrive, Salesforce, Zoho, Attio.", { entities: ["HubSpot", "Pipedrive", "Salesforce", "Zoho CRM", "Attio"] });
+  add("trip", "2026-11-10T06:00:00Z", "Plan a Goa trip in December for 4 friends", "Book flights early; North Goa for nightlife.");
+  add("broken", "2026-11-10T07:00:00Z", "Kubernetes autoscaling question", "", {}, "failed");
+  return s;
+}
+
+test("related past chats come along automatically, without asking about the past", () => {
+  const s = store2();
+  const m = lookupMemory(s, "Which CRM should my team pick, and is Attio any good?", now, tz, { currentConversationId: "new", excludeTurnIds: new Set() });
+  assert.equal(m.queries[0]?.phrase, "related past chats");
+  assert.match(m.text, /HubSpot/);
+  assert.doesNotMatch(m.text, /Goa/); // unrelated chat not dragged in
+});
+
+test("automatic recall stays quiet for chit-chat, the current chat, and failed answers", () => {
+  const s = store2();
+  const o = (current: string) => ({ currentConversationId: current, excludeTurnIds: new Set<string>() });
+  assert.deepEqual(lookupMemory(s, "thanks, that was helpful!", now, tz, o("new")).queries, []);
+  assert.deepEqual(lookupMemory(s, "more CRM ideas please", now, tz, o("crm")).queries, []); // already in this chat's history
+  assert.deepEqual(lookupMemory(s, "how does Kubernetes autoscaling work?", now, tz, o("new")).queries, []); // only a failed answer exists
+});
+
+test("recent activity shows the latest exchanges from other chats, newest first", async () => {
+  const { recentActivity } = await import("../src/recall.ts");
+  const r = recentActivity(store2(), tz, "trip");
+  assert.match(r, /recalled_conversations kind="recent"/);
+  assert.match(r, /Shortlist 5 CRM tools/);
+  assert.doesNotMatch(r, /Goa/); // the current chat
+  assert.doesNotMatch(r, /Kubernetes/); // failed answers are not memory
+});
