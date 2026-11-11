@@ -1,6 +1,6 @@
 # Design
 
-**A research agent whose only tool is web search, with temporal memory that the app looks up deterministically, facts extracted asynchronously, and per-claim comparison against the past. It runs on Groq (`gpt-oss-120b` + browser search) or Gemini (Google Search grounding) behind one small adapter.**
+**A research agent whose only tool is web search, with temporal memory that the app looks up deterministically, facts extracted asynchronously, and per-claim comparison against the past. It runs on Claude, Gemini or Groq (each with its built-in web search), picked from whichever key is pasted, behind one small adapter.**
 
 ## How it works
 

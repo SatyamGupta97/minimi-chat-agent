@@ -137,6 +137,7 @@ const server = createServer(async (req, res) => {
 server.listen(config.port, () => {
   console.log(`\n  Chat agent running → http://localhost:${config.port}`);
   console.log(`  provider: ${config.provider} · model: ${config.chatModel} (effort ${config.effort}) · memory: ${config.dataFile}`);
+  for (const w of config.warnings) console.warn(`  ⚠ ${w}`);
   const missing = provider.missingConfig();
   if (missing) {
     console.warn(`  ⚠ ${missing}\n`);

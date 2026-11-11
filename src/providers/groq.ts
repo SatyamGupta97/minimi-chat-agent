@@ -142,7 +142,7 @@ export class GroqProvider implements Provider {
   }
 
   missingConfig(): string | null {
-    return this.apiKey ? null : "GROQ_API_KEY is not set. Copy .env.example to .env and add your key.";
+    return this.apiKey ? null : "No API key set. Put a Groq, Claude or Gemini key in .env as LLM_API_KEY.";
   }
 
   async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {
@@ -225,7 +225,7 @@ export class GroqProvider implements Provider {
 
   describeError(err: unknown): string | undefined {
     if (!(err instanceof Groq.APIError)) return undefined;
-    if (err.status === 401) return "GROQ_API_KEY was rejected (invalid key).";
+    if (err.status === 401) return "Your Groq API key was rejected. Check the key in .env.";
     if (err.status === 413) return "Request too large for this Groq key's tokens-per-minute limit. Try a shorter question or a new chat.";
     if (err.status === 429) {
       const wait = Number(err.headers?.get?.("retry-after") ?? NaN);

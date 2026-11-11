@@ -75,7 +75,7 @@ export class GeminiProvider implements Provider {
   }
 
   missingConfig(): string | null {
-    return this.apiKey ? null : "GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.";
+    return this.apiKey ? null : "No API key set. Put a Groq, Claude or Gemini key in .env as LLM_API_KEY.";
   }
 
   async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {
@@ -152,8 +152,8 @@ export class GeminiProvider implements Provider {
 
   describeError(err: unknown): string | undefined {
     if (!(err instanceof ApiError)) return undefined;
-    if (err.status === 400 && /api key/i.test(err.message)) return "Invalid GEMINI_API_KEY.";
-    if (err.status === 401 || err.status === 403) return "GEMINI_API_KEY was rejected (invalid key or no access to this model).";
+    if (err.status === 400 && /api key/i.test(err.message)) return "Your Gemini API key was rejected. Check the key in .env.";
+    if (err.status === 401 || err.status === 403) return "Your Gemini API key was rejected (invalid key or no access to this model).";
     if (err.status === 429 && /quota/i.test(err.message)) {
       return "This Gemini API key has no quota for this request. On free keys that usually means Google Search grounding: it needs billing enabled on the key's project (Google AI Studio → billing).";
     }
