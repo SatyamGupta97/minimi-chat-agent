@@ -117,3 +117,10 @@ test("the week before last, and 'previous' like 'last'", () => {
   assert.deepEqual(ranges("the week before last"), ["2026-10-26..2026-11-01"]);
   assert.deepEqual(ranges("the previous Tuesday"), ["2026-11-10", "2026-11-03"]);
 });
+
+test("more ways of pointing at earlier chats", () => {
+  assert.ok(refersToPast("what was my last question?"));
+  assert.ok(refersToPast("in the other chat I told you something"));
+  assert.ok(refersToPast("what did we talk about in our previous conversation?"));
+  assert.ok(!refersToPast("what is my name?")); // answered from the profile, not a lookup
+});

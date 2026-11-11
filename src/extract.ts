@@ -19,6 +19,11 @@ const Extraction = z.object({
     .describe(
       "Context the user stated or decided that a future conversation would need, as self-contained sentences: shortlists, choices, constraints, team size, budget, preferences. E.g. 'Shortlisted HubSpot, Pipedrive, Close, Attio and Zoho CRM for a 20-person sales team'. Empty if none.",
     ),
+  about_user: z
+    .array(z.string())
+    .describe(
+      "Durable facts the USER states about themselves in their message (never inferred, never from the assistant's answer): name, role, company, team size, location, timezone, preferences, ongoing projects. Self-contained sentences, e.g. 'The user's name is Satyam.' Empty if none.",
+    ),
   facts: z
     .array(
       z.object({
@@ -37,10 +42,10 @@ export async function extractFacts(
   question: string,
   answer: string,
   sources: Source[],
-): Promise<{ title: string; facts: Fact[]; entities: string[]; decisions: string[] }> {
+): Promise<{ title: string; facts: Fact[]; entities: string[]; decisions: string[]; aboutUser: string[] }> {
   const sourceList = sources.map((s, i) => `[${i + 1}] ${s.title} - ${s.url}`).join("\n");
   const out = await provider.json(
-    `Extract a short title, the entities discussed, the user's decisions/context, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
+    `Extract a short title, the entities discussed, the user's decisions/context, facts the user states about themselves, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
     Extraction,
   );
   // A fact keeps a source URL only if that source's [n] marker sits in the same
@@ -52,6 +57,7 @@ export async function extractFacts(
     title: out.title.trim().slice(0, 80),
     entities: out.entities.slice(0, 30),
     decisions: out.decisions.slice(0, 10),
+    aboutUser: out.about_user.slice(0, 10),
     facts: out.facts.slice(0, 40).map((f) => ({
       subject: f.subject,
       attribute: f.attribute,

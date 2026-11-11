@@ -77,6 +77,7 @@ test("pending extractions are recovered on startup", async () => {
       title: "Postgres hosting",
       entities: ["Neon"],
       decisions: [],
+      about_user: ["The user's name is Satyam."],
       facts: [
         { subject: "Neon", attribute: "Launch price", value: "$19/mo", as_of: null, source_number: 1 },
         // A source the answer never cited must not become a URL.
@@ -92,6 +93,7 @@ test("pending extractions are recovered on startup", async () => {
   assert.equal(t.facts?.[0].sourceUrl, "https://neon.com/pricing");
   assert.equal(t.facts?.[1].sourceUrl, null);
   assert.equal(s.getConversation(t.conversationId)?.title, "Postgres hosting");
+  assert.deepEqual(t.aboutUser, ["The user's name is Satyam."]);
 });
 
 test("extraction retries, then gives up after 3 attempts", async () => {

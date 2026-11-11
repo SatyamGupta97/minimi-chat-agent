@@ -70,6 +70,8 @@ export interface Turn {
   entities?: string[];
   /** What the user decided or told us, e.g. "Shortlisted HubSpot, Pipedrive, ... for a 20-person sales team". */
   decisions?: string[];
+  /** Durable facts the user stated about themselves ("The user's name is Satyam."); feeds the cross-chat profile. */
+  aboutUser?: string[];
   /** Background fact extraction state; "pending" is retried on startup. */
   extraction?: "pending" | "done" | "failed";
   extractionAttempts?: number;
@@ -207,7 +209,7 @@ export class Store {
     return t;
   }
 
-  updateTurn(id: string, patch: Partial<Pick<Turn, "facts" | "entities" | "decisions" | "extraction" | "extractionAttempts">>): void {
+  updateTurn(id: string, patch: Partial<Pick<Turn, "facts" | "entities" | "decisions" | "aboutUser" | "extraction" | "extractionAttempts">>): void {
     const t = this.db.turns.find((x) => x.id === id);
     if (!t) return;
     Object.assign(t, patch);

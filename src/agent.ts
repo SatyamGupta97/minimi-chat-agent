@@ -3,7 +3,7 @@ import { extractFacts } from "./extract.ts";
 import { lookupMemory } from "./memory-context.ts";
 import { SYSTEM_PROMPT, turnContext } from "./prompt.ts";
 import type { HistoryItem, Provider, TurnSetup } from "./providers/types.ts";
-import { memoryDigest } from "./recall.ts";
+import { memoryDigest, userProfile } from "./recall.ts";
 import type { Source, Store, Turn, TurnStatus } from "./store.ts";
 import { humanDateTime, temporalContext } from "./time.ts";
 
@@ -102,7 +102,7 @@ export class Agent {
     const setup: TurnSetup = {
       system: SYSTEM_PROMPT,
       history: history(prior, tz),
-      context: turnContext(temporalContext(now, tz), memoryDigest(this.store, tz, convId), memory.text),
+      context: turnContext(temporalContext(now, tz), userProfile(this.store), memoryDigest(this.store, tz, convId), memory.text),
       message: `[sent ${humanDateTime(now, tz)}]\n${input.message}`,
       citations: {
         cite(s) {
@@ -184,7 +184,7 @@ export class Agent {
     const attempts = (turn.extractionAttempts ?? 0) + 1;
     try {
       const x = await extractFacts(this.provider, question.text, turn.text, turn.sources ?? []);
-      this.store.updateTurn(turnId, { facts: x.facts, entities: x.entities, decisions: x.decisions, extraction: "done", extractionAttempts: attempts });
+      this.store.updateTurn(turnId, { facts: x.facts, entities: x.entities, decisions: x.decisions, aboutUser: x.aboutUser, extraction: "done", extractionAttempts: attempts });
       const conv = this.store.getConversation(turn.conversationId);
       if (x.title && conv && (setTitle || conv.title === question.text.slice(0, 60))) this.store.setTitle(conv.id, x.title);
     } catch (e) {

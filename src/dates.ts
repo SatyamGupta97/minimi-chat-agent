@@ -137,5 +137,8 @@ export function refersToPast(message: string): boolean {
     /\byour (answer|reply|recommendation|response)\b/,
     // "last time", "our chat", "remember when", "since then", "previously"
     /\b(last time|previously|since then|remember|we were|our (chat|conversation|discussion)|that (chat|conversation|discussion))\b/,
+    // "my last question", "the other chat", "in our previous conversation", "what have we talked about"
+    /\bmy (last|previous|earlier|first|other) (question|message|chat)s?\b/,
+    /\b(previous|last|other|earlier|old|past) (chat|conversation|discussion|session)s?\b/,
   ].some((re) => re.test(t));
 }
