@@ -4,7 +4,7 @@ import { config } from "./config.ts";
 import { extractFacts } from "./extract.ts";
 import { SYSTEM_PROMPT, turnContext } from "./prompt.ts";
 import { memoryDigest, recall } from "./recall.ts";
-import type { Source, Store, Turn } from "./store.ts";
+import type { Source, Store, Turn, TurnStatus } from "./store.ts";
 import { humanDateTime, temporalContext } from "./time.ts";
 
 type MessageParam = Anthropic.Beta.BetaMessageParam;
@@ -14,26 +14,33 @@ type ContentBlock = Anthropic.Beta.BetaContentBlock;
 export type AgentEvent =
   | { type: "meta"; conversationId: string; title: string }
   | { type: "status"; kind: "search"; query: string }
-  | { type: "status"; kind: "recall"; detail: string }
+  | { type: "status"; kind: "recall"; detail: string; args: unknown }
   | { type: "status"; kind: "thinking" }
   | { type: "text"; text: string }
   /** Model fallback restarted the answer: discard what was streamed so far. */
   | { type: "reset" }
-  | { type: "sources"; sources: Source[] }
-  | { type: "done"; turnId: string; ms: number; searches: number }
+  | { type: "sources"; cited: Source[]; retrieved: Source[] }
+  | { type: "done"; turnId: string; status: TurnStatus; ms: number; searches: number }
   | { type: "error"; message: string };
 
 export interface TurnInput {
   conversationId?: string;
   message: string;
   tz: string;
-  /** Override the clock (used by the seed script to create backdated history). */
+  /** Override the clock (used by the seed script and evals to create backdated history). */
   now?: Date;
   signal?: AbortSignal;
 }
 
 // Models that accept server-side refusal fallbacks.
 const FALLBACK_MODELS = new Set(["claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2"]);
+// Models that accept mid-conversation `role: "system"` messages. Others get the
+// per-turn context as a marked block inside the user message instead.
+const SYSTEM_MESSAGE_MODELS = new Set([
+  "claude-opus-5-5", "claude-opus-5", "claude-opus-4-8", "claude-sonnet-5-5", "claude-haiku-5-5",
+  "claude-fable-5", "claude-fable-5-1", "claude-fable-5-2",
+]);
+const MAX_EXTRACTION_ATTEMPTS = 3;
 
 const RecallInput = z.object({
   query: z.string().optional(),
@@ -45,7 +52,7 @@ const RecallInput = z.object({
 const RECALL_TOOL: Anthropic.Beta.BetaTool = {
   name: "recall_memory",
   description:
-    "Search the user's past conversations with you. Returns matching exchanges (when, what they asked, what you answered, the facts you stated, the sources you used) plus an overview of what memory exists. Give a date range (inclusive, user's local dates) when the user refers to a time, a topic query when they refer to a subject, or both. Results already in the current conversation are flagged.",
+    "Search the user's past conversations with you. Returns matching exchanges (when, what they asked, what you answered, what it was about, what the user decided, the facts you stated, the sources you cited) plus an overview of what memory exists. Give a date range (inclusive, user's local dates) when the user refers to a time, a topic query when they refer to a subject, or both. Results already in the current conversation are flagged. Answers with answer_status other than 'completed' were cut off and are not a reliable baseline.",
   input_schema: {
     type: "object",
     properties: {
@@ -59,15 +66,22 @@ const RECALL_TOOL: Anthropic.Beta.BetaTool = {
   eager_input_streaming: true,
 };
 
+const INTERRUPTED_NOTE: Record<Exclude<TurnStatus, "completed">, string> = {
+  incomplete: "(My previous answer was cut off before it finished.)",
+  failed: "(My previous answer failed with an error before it finished.)",
+  cancelled: "(The user stopped my previous answer before it finished.)",
+};
+
 /**
  * Prior turns of the current conversation, replayed as plain text.
  *
  * We deliberately do NOT replay raw web-search result blocks or thinking blocks
  * from earlier turns: they are large (encrypted page content), slow every later
- * request down, and are stale by the next turn anyway. Each assistant turn
- * keeps a short list of the sources it cited so follow-ups can refer to them.
- * Each user turn carries the time it was sent, so the model knows that "since
- * then" in a chat resumed three days later means three days.
+ * request down, and are stale by the next turn anyway. Each completed assistant
+ * turn keeps the sources it cited so follow-ups can refer to them; an answer
+ * that didn't complete is replaced by a note, so a half-answer is never treated
+ * as something the assistant stands behind. Each user turn carries the time it
+ * was sent, so "since then" in a chat resumed three days later means three days.
  */
 function historyMessages(turns: Turn[], tz: string): MessageParam[] {
   const recent = turns.slice(-config.historyTurns);
@@ -75,7 +89,9 @@ function historyMessages(turns: Turn[], tz: string): MessageParam[] {
   for (const t of recent) {
     if (t.role === "user") {
       msgs.push({ role: "user", content: `[sent ${humanDateTime(new Date(t.at), t.tz || tz)}]\n${t.text}` });
-    } else if (t.text.trim() && !t.text.startsWith("_(error")) {
+    } else if (t.status && t.status !== "completed") {
+      msgs.push({ role: "assistant", content: INTERRUPTED_NOTE[t.status] });
+    } else if (t.text.trim()) {
       const src = (t.sources ?? []).slice(0, 8).map((s, i) => `[${i + 1}] ${s.title} - ${s.url}`);
       const footer = src.length ? `\n\nSources:\n${src.join("\n")}` : "";
       msgs.push({ role: "assistant", content: t.text + footer });
@@ -99,25 +115,30 @@ export class Agent {
     let conv = input.conversationId ? this.store.getConversation(input.conversationId) : undefined;
     const isNew = !conv;
     conv ??= this.store.createConversation(now, input.message.slice(0, 60));
-    emit({ type: "meta", conversationId: conv.id, title: conv.title });
+    const convId = conv.id;
+    emit({ type: "meta", conversationId: convId, title: conv.title });
 
-    const prior = this.store.turns(conv.id);
+    const prior = this.store.turns(convId);
     // Persist the question first: it's part of memory even if the answer fails.
-    const userTurn = this.store.addTurn({
-      conversationId: conv.id,
-      role: "user",
-      text: input.message,
-      at: now.toISOString(),
-      tz,
-    });
+    const userTurn = this.store.addTurn({ conversationId: convId, role: "user", text: input.message, at: now.toISOString(), tz });
 
-    const messages: MessageParam[] = [
-      ...historyMessages(prior, tz),
-      { role: "user", content: `[sent ${humanDateTime(now, tz)}]\n${input.message}` },
+    const context = turnContext(temporalContext(now, tz), memoryDigest(this.store, tz, convId));
+    const userText = `[sent ${humanDateTime(now, tz)}]\n${input.message}`;
+    const messages: MessageParam[] = [...historyMessages(prior, tz)];
+    if (SYSTEM_MESSAGE_MODELS.has(config.chatModel)) {
       // Per-turn context as a mid-conversation system message: keeps the cached
-      // prefix (system prompt + earlier turns) intact while giving fresh facts.
-      { role: "system", content: turnContext(temporalContext(now, tz), memoryDigest(this.store, tz, conv.id)) },
-    ] as MessageParam[];
+      // prefix (system prompt + earlier turns) byte-identical while giving the
+      // model fresh operator-level facts (clock, calendar, memory index).
+      messages.push({ role: "user", content: userText }, { role: "system", content: context });
+    } else {
+      messages.push({
+        role: "user",
+        content: [
+          { type: "text", text: `<context source="app, not the user">\n${context}\n</context>` },
+          { type: "text", text: userText },
+        ],
+      });
+    }
 
     const tools: Anthropic.Beta.BetaToolUnion[] = [
       {
@@ -133,7 +154,8 @@ export class Agent {
     const cited: Source[] = []; // in order of first citation; index+1 = marker number
     const searches: string[] = [];
     let answer = "";
-    let stopNote = "";
+    let status: TurnStatus = "incomplete"; // proven "completed" only by a clean end_turn
+    let note = "";
 
     const citeMarker = (block: Anthropic.Beta.BetaTextBlock): string => {
       const nums = new Set<number>();
@@ -155,7 +177,8 @@ export class Agent {
     };
 
     try {
-      for (let iter = 0; iter < config.maxIterations; iter++) {
+      let finished = false;
+      for (let iter = 0; iter < config.maxIterations && !finished; iter++) {
         if (iter > 0 && answer && !answer.endsWith("\n")) say("\n\n");
 
         const stream = this.client.beta.messages.stream(
@@ -208,82 +231,122 @@ export class Agent {
             const marker = citeMarker(block);
             if (marker) say(marker);
           } else if (block.type === "tool_use" && block.name === "recall_memory") {
-            emit({ type: "status", kind: "recall", detail: describeRecall(block.input) });
+            emit({ type: "status", kind: "recall", detail: describeRecall(block.input), args: block.input });
           }
         });
 
         const msg = await stream.finalMessage();
 
-        if (msg.stop_reason === "pause_turn") {
-          // Long server-side search turn: send it back so the server continues.
-          messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
-          continue;
+        switch (msg.stop_reason) {
+          case "pause_turn":
+            // Long server-side search turn: send it back so the server continues.
+            messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
+            break;
+          case "tool_use":
+            messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
+            messages.push({ role: "user", content: this.runTools(msg.content, tz, convId, userTurn.id) });
+            break;
+          case "end_turn":
+          case "stop_sequence":
+            status = "completed";
+            finished = true;
+            break;
+          case "max_tokens":
+            note = "\n\n_(Cut off at the length limit. Ask me to continue.)_";
+            finished = true;
+            break;
+          case "refusal":
+            if (!answer.trim()) say("Sorry, I can't help with that one.");
+            finished = true;
+            break;
+          default:
+            finished = true;
         }
-
-        if (msg.stop_reason === "tool_use") {
-          const calls = msg.content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
-          messages.push({ role: "assistant", content: msg.content as Anthropic.Beta.BetaContentBlockParam[] });
-          const results: Anthropic.Beta.BetaToolResultBlockParam[] = calls.map((call) => {
-            if (call.name !== "recall_memory") {
-              return { type: "tool_result", tool_use_id: call.id, is_error: true, content: `Unknown tool ${call.name}` };
-            }
-            const parsed = RecallInput.safeParse(call.input);
-            if (!parsed.success) {
-              return { type: "tool_result", tool_use_id: call.id, is_error: true, content: `Invalid input: ${parsed.error.message}` };
-            }
-            const result = recall(this.store, parsed.data, tz, {
-              currentConversationId: conv.id,
-              excludeTurnIds: new Set([userTurn.id]),
-            });
-            return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) };
-          });
-          messages.push({ role: "user", content: results });
-          continue;
-        }
-
-        if (msg.stop_reason === "refusal" && !answer.trim()) say("Sorry, I can't help with that one.");
-        if (msg.stop_reason === "max_tokens") stopNote = "\n\n_(Answer cut off: it hit the length limit. Ask me to continue.)_";
-        break;
       }
+      if (!finished) note = "\n\n_(I hit my step limit for one answer before finishing. Ask me to continue.)_";
     } catch (err) {
       if (input.signal?.aborted) {
-        stopNote = "\n\n_(stopped)_";
+        status = "cancelled";
+        note = "\n\n_(stopped)_";
       } else {
-        const message = errorMessage(err);
-        emit({ type: "error", message });
-        if (!answer.trim()) {
-          answer = `_(error: ${message})_`;
-        }
+        status = "failed";
+        emit({ type: "error", message: errorMessage(err) });
       }
     }
 
-    if (stopNote) say(stopNote);
+    if (note) say(note);
 
-    // Prefer what was actually cited; fall back to what was read.
-    const sources = cited.length ? cited : [...seen.values()].slice(0, 6);
-    if (sources.length) emit({ type: "sources", sources });
+    // Only what the answer cited counts as evidence; what it merely read is kept apart.
+    const citedUrls = new Set(cited.map((s) => s.url));
+    const retrieved = [...seen.values()].filter((s) => !citedUrls.has(s.url)).slice(0, 10);
+    if (cited.length || retrieved.length) emit({ type: "sources", cited, retrieved });
 
     const assistantTurn = this.store.addTurn({
-      conversationId: conv.id,
+      conversationId: convId,
       role: "assistant",
+      replyTo: userTurn.id,
+      status,
       text: answer,
       at: new Date(now.getTime() + (Date.now() - started)).toISOString(),
       tz,
-      sources,
+      sources: cited,
+      retrieved,
       searches,
+      // Only completed answers become baselines for "has anything changed?".
+      extraction: status === "completed" && answer.trim() ? "pending" : undefined,
     });
-    emit({ type: "done", turnId: assistantTurn.id, ms: Date.now() - started, searches: searches.length });
+    emit({ type: "done", turnId: assistantTurn.id, status, ms: Date.now() - started, searches: searches.length });
 
     // Off the latency path: distill facts for future "has it changed?" questions.
-    if (answer.trim() && !answer.startsWith("_(error")) {
-      void extractFacts(this.client, input.message, answer, sources)
-        .then((x) => {
-          if (!x) return;
-          this.store.updateTurn(assistantTurn.id, { facts: x.facts, entities: x.entities, decisions: x.decisions });
-          if (isNew && x.title) this.store.setTitle(conv.id, x.title);
-        })
-        .catch((e) => console.warn("[extract] failed:", errorMessage(e)));
+    if (assistantTurn.extraction === "pending") void this.extract(assistantTurn.id, isNew);
+  }
+
+  private runTools(content: ContentBlock[], tz: string, convId: string, userTurnId: string): Anthropic.Beta.BetaToolResultBlockParam[] {
+    const calls = content.filter((b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use");
+    return calls.map((call) => {
+      if (call.name !== "recall_memory") {
+        return { type: "tool_result", tool_use_id: call.id, is_error: true, content: `Unknown tool ${call.name}` };
+      }
+      const parsed = RecallInput.safeParse(call.input);
+      if (!parsed.success) {
+        return { type: "tool_result", tool_use_id: call.id, is_error: true, content: `Invalid input: ${parsed.error.message}` };
+      }
+      const result = recall(this.store, parsed.data, tz, {
+        currentConversationId: convId,
+        excludeTurnIds: new Set([userTurnId]),
+      });
+      return { type: "tool_result", tool_use_id: call.id, content: JSON.stringify(result) };
+    });
+  }
+
+  /**
+   * Extract facts for one answer. The pending state is persisted before this
+   * runs, so a crash or restart mid-extraction is recovered by
+   * recoverPendingExtractions() on the next start.
+   */
+  async extract(turnId: string, setTitle = false): Promise<void> {
+    const turn = this.store.allTurns().find((t) => t.id === turnId);
+    const question = turn?.replyTo ? this.store.allTurns().find((t) => t.id === turn.replyTo) : undefined;
+    if (!turn || !question) return;
+    const attempts = (turn.extractionAttempts ?? 0) + 1;
+    try {
+      const x = await extractFacts(this.client, question.text, turn.text, turn.sources ?? []);
+      if (!x) throw new Error("extractor returned no parsed output");
+      this.store.updateTurn(turnId, { facts: x.facts, entities: x.entities, decisions: x.decisions, extraction: "done", extractionAttempts: attempts });
+      const conv = this.store.getConversation(turn.conversationId);
+      if (x.title && conv && (setTitle || conv.title === question.text.slice(0, 60))) this.store.setTitle(conv.id, x.title);
+    } catch (e) {
+      const giveUp = attempts >= MAX_EXTRACTION_ATTEMPTS;
+      this.store.updateTurn(turnId, { extraction: giveUp ? "failed" : "pending", extractionAttempts: attempts });
+      console.warn(`[extract] attempt ${attempts} failed${giveUp ? " (giving up)" : ""}:`, errorMessage(e));
     }
+  }
+
+  /** Resume extraction work interrupted by a restart. Sequential: it's background work. */
+  async recoverPendingExtractions(): Promise<number> {
+    const pending = this.store.allTurns().filter((t) => t.extraction === "pending").map((t) => t.id);
+    for (const id of pending) await this.extract(id);
+    return pending.length;
   }
 }
 

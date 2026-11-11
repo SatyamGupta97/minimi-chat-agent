@@ -5,6 +5,10 @@ import { dirname } from "node:path";
 /**
  * Durable, time-indexed memory of every conversation.
  *
+ * Assumes ONE server process owns the file (the app's deployment model). Within
+ * that process every mutation is a synchronous write, so writes are serialized
+ * by construction; there is no cross-process locking.
+ *
  * A single JSON file is deliberate: one local user, thousands of turns at most,
  * zero native dependencies, and `npm install && npm run dev` works on any Node.
  * Writes are atomic (temp file + rename) so a crash can't corrupt history.
@@ -29,22 +33,42 @@ export interface Fact {
   sourceUrl?: string | null;
 }
 
+export type TurnStatus =
+  /** The model finished its answer normally. Only these become trusted baselines. */
+  | "completed"
+  /** Cut off: length limit, step limit, or a refusal. */
+  | "incomplete"
+  /** An error (API, network) ended the turn. */
+  | "failed"
+  /** The user pressed stop. */
+  | "cancelled";
+
 export interface Turn {
   id: string;
   conversationId: string;
   role: "user" | "assistant";
   text: string;
+  /** Assistant turns: the user turn this answers (explicit, never inferred from order). */
+  replyTo?: string;
+  /** Assistant turns only. */
+  status?: TurnStatus;
   /** ISO-8601 instant. */
   at: string;
   /** IANA timezone the user was in when the turn happened. */
   tz: string;
+  /** Sources the answer actually cited. These are evidence. */
   sources?: Source[];
+  /** Pages the search returned but the answer did not cite. Context only, not evidence. */
+  retrieved?: Source[];
   searches?: string[];
   facts?: Fact[];
   /** Products/companies/things the exchange was about, e.g. ["Neon", "Supabase"]. */
   entities?: string[];
   /** What the user decided or told us, e.g. "Shortlisted HubSpot, Pipedrive, ... for a 20-person sales team". */
   decisions?: string[];
+  /** Background fact extraction state; "pending" is retried on startup. */
+  extraction?: "pending" | "done" | "failed";
+  extractionAttempts?: number;
 }
 
 export interface Conversation {
@@ -79,7 +103,7 @@ export class Store {
 
   private save(): void {
     mkdirSync(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp`;
+    const tmp = `${this.file}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(this.db));
     renameSync(tmp, this.file);
   }
@@ -128,7 +152,7 @@ export class Store {
     return t;
   }
 
-  updateTurn(id: string, patch: Partial<Pick<Turn, "facts" | "entities" | "decisions">>): void {
+  updateTurn(id: string, patch: Partial<Pick<Turn, "facts" | "entities" | "decisions" | "extraction" | "extractionAttempts">>): void {
     const t = this.db.turns.find((x) => x.id === id);
     if (!t) return;
     Object.assign(t, patch);

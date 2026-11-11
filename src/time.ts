@@ -51,8 +51,11 @@ function utcOffset(d: Date, tz: string): string {
  * LLMs are unreliable at "which date was last Tuesday?"; a lookup table is not.
  */
 export function temporalContext(now: Date, tz: string, days = 21): string {
+  // Walk back over *calendar dates* (Y-M-D arithmetic in UTC), not 24h steps:
+  // stepping by 86,400,000 ms skips or repeats a date across DST changes.
+  const [y, m, d] = localDate(now, tz).split("-").map(Number);
   const fmt = new Intl.DateTimeFormat("en-GB", {
-    timeZone: tz,
+    timeZone: "UTC",
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -60,13 +63,13 @@ export function temporalContext(now: Date, tz: string, days = 21): string {
   });
   const lines: string[] = [];
   for (let i = 0; i < days; i++) {
-    // Step back in 24h increments from local noon-ish to avoid DST edge cases.
-    const d = new Date(now.getTime() - i * 86_400_000);
+    const day = new Date(Date.UTC(y, m - 1, d - i));
     const label = i === 0 ? " (today)" : i === 1 ? " (yesterday)" : "";
-    lines.push(`- ${localDate(d, tz)}: ${fmt.format(d)}${label}`);
+    lines.push(`- ${day.toISOString().slice(0, 10)}: ${fmt.format(day)}${label}`);
   }
+  const today = fmt.format(new Date(Date.UTC(y, m - 1, d)));
   return [
-    `Current date and time for the user: ${fmt.format(now)}, ${humanDateTime(now, tz).split(", ")[1]} (${tz}, ${utcOffset(now, tz)}).`,
+    `Current date and time for the user: ${today}, ${humanDateTime(now, tz).split(", ")[1]} (${tz}, ${utcOffset(now, tz)}).`,
     `Calendar of the last ${days} days (use this to resolve "Monday", "last Tuesday", "3 November", etc.):`,
     ...lines,
   ].join("\n");

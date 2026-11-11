@@ -76,15 +76,30 @@ function addAssistant() {
   };
 }
 
-function renderSources(el, sources) {
+// Cited sources are numbered evidence. Pages that were only read are shown
+// apart (collapsed), so a source list never implies support it didn't give.
+function renderSources(el, cited = [], retrieved = []) {
   el.innerHTML = "";
-  sources.forEach((s, i) => {
+  const link = (s, label) => {
     const a = document.createElement("a");
     a.href = s.url; a.target = "_blank"; a.rel = "noopener"; a.title = s.title;
-    a.innerHTML = `<span class="n">${i + 1}</span><span class="t">${escapeHtml(domain(s.url))} · ${escapeHtml(s.title)}</span>${s.pageAge ? `<span class="age">${escapeHtml(s.pageAge)}</span>` : ""}`;
-    el.append(a);
-  });
+    a.innerHTML = `${label ? `<span class="n">${label}</span>` : ""}<span class="t">${escapeHtml(domain(s.url))} · ${escapeHtml(s.title)}</span>${s.pageAge ? `<span class="age">${escapeHtml(s.pageAge)}</span>` : ""}`;
+    return a;
+  };
+  cited.forEach((s, i) => el.append(link(s, i + 1)));
+  if (retrieved.length) {
+    const d = document.createElement("details");
+    d.className = "read";
+    d.innerHTML = `<summary>${cited.length ? `+${retrieved.length} more read, not cited` : `${retrieved.length} pages read (none cited)`}</summary>`;
+    const box = document.createElement("div");
+    box.className = "sources";
+    retrieved.forEach((s) => box.append(link(s)));
+    d.append(box);
+    el.append(d);
+  }
 }
+
+const STATUS_LABEL = { incomplete: "Answer incomplete", failed: "Answer failed", cancelled: "Stopped" };
 
 function chip(el, text, live = true) {
   el.querySelectorAll(".chip.live").forEach((c) => c.classList.remove("live"));
@@ -154,8 +169,8 @@ async function send(text) {
             paint();
             break;
           case "sources":
-            sources = e.sources;
-            renderSources(view.sources, sources);
+            sources = e.cited;
+            renderSources(view.sources, e.cited, e.retrieved);
             paint();
             break;
           case "error": {
@@ -166,7 +181,8 @@ async function send(text) {
             break;
           }
           case "done":
-            view.meta.textContent = `${(e.ms / 1000).toFixed(1)}s${e.searches ? ` · ${e.searches} search${e.searches > 1 ? "es" : ""}` : ""}`;
+            view.meta.textContent = [STATUS_LABEL[e.status], `${(e.ms / 1000).toFixed(1)}s`, e.searches ? `${e.searches} search${e.searches > 1 ? "es" : ""}` : ""]
+              .filter(Boolean).join(" · ");
             break;
         }
       }
@@ -226,7 +242,8 @@ async function openConversation(id) {
       const v = addAssistant();
       v.status.remove();
       v.answer.innerHTML = renderMarkdown(t.text, t.sources);
-      if (t.sources?.length) renderSources(v.sources, t.sources);
+      renderSources(v.sources, t.sources, t.retrieved);
+      if (STATUS_LABEL[t.status]) v.meta.textContent = STATUS_LABEL[t.status];
     }
   }
   els.sidebar.classList.remove("open");

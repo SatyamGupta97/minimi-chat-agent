@@ -4,14 +4,17 @@
   "private": true,
   "description": "A chat agent with web search and time-aware memory of past conversations.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx src/server.ts",
     "start": "tsx src/server.ts",
     "ask": "tsx scripts/ask.ts",
     "seed": "tsx scripts/seed.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

@@ -22,9 +22,9 @@ await agent.runTurn({ conversationId, message, tz }, (e) => {
   if (e.type === "text") process.stdout.write(e.text);
   else if (e.type === "status" && e.kind === "search") process.stderr.write(`\x1b[2m[search] ${e.query}\x1b[0m\n`);
   else if (e.type === "status" && e.kind === "recall") process.stderr.write(`\x1b[2m[memory] ${e.detail}\x1b[0m\n`);
-  else if (e.type === "sources") e.sources.forEach((s, i) => process.stdout.write(`${i === 0 ? "\n\n" : ""}[${i + 1}] ${s.title} - ${s.url}\n`));
+  else if (e.type === "sources") e.cited.forEach((s, i) => process.stdout.write(`${i === 0 ? "\n\n" : ""}[${i + 1}] ${s.title} - ${s.url}\n`));
   else if (e.type === "error") process.stderr.write(`\n[error] ${e.message}\n`);
-  else if (e.type === "done") process.stderr.write(`\x1b[2m\n(${(e.ms / 1000).toFixed(1)}s, ${e.searches} searches)\x1b[0m\n`);
+  else if (e.type === "done") process.stderr.write(`\x1b[2m\n(${e.status}, ${(e.ms / 1000).toFixed(1)}s, ${e.searches} searches)\x1b[0m\n`);
   else if (e.type === "meta") process.stderr.write(`\x1b[2m[conversation ${e.conversationId}]\x1b[0m\n`);
 });
 // Give the background fact extraction a moment to finish before exiting.

@@ -70,6 +70,9 @@ sup.cite a { text-decoration: none; font-size: 11px; padding: 0 2px; }
 .sources .n { color: var(--accent); font-weight: 600; }
 .sources .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sources .age { color: var(--muted); white-space: nowrap; }
+.sources details.read { width: 100%; font-size: 12px; color: var(--muted); }
+.sources details.read summary { cursor: pointer; }
+.sources details.read .sources { opacity: 0.75; }
 .meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
 
 #composer { display: flex; gap: 8px; padding: 12px 16px 16px; max-width: 792px; width: 100%; margin: 0 auto; }

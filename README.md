@@ -21,7 +21,8 @@ Optional:
 ```bash
 npm run seed              # create backdated history (real answers filed under last Monday/Tuesday) to try the memory questions
 npm run ask -- "question" # terminal client sharing the same memory
-npm test                  # memory/time unit tests (no API calls)
+npm test                  # offline tests: dates/DST, recall, Q/A linking, extraction recovery
+npm run eval              # end-to-end scenarios against the live model (fixture history, graded checks)
 ```
 
 Memory lives in `data/memory.json`. Delete it to start fresh.
@@ -38,5 +39,6 @@ Memory lives in `data/memory.json`. Delete it to start fresh.
 | `src/store.ts` | Atomic JSON-file store |
 | `src/server.ts` | HTTP + SSE server, no framework |
 | `public/` | Vanilla-JS chat UI (streaming markdown, citations, status chips, history sidebar) |
+| `scripts/eval.ts` | End-to-end eval scenarios for the test-set question patterns |
 
 See [DESIGN.md](DESIGN.md) for the reasoning.

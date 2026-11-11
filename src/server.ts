@@ -38,6 +38,13 @@ async function readBody(req: IncomingMessage, limit = 100_000): Promise<unknown>
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
 
+/**
+ * One in-flight turn per conversation. A second message while the first is
+ * still answering would race on history; the UI already prevents it, so the
+ * server simply refuses it.
+ */
+const busy = new Set<string>();
+
 async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = (await readBody(req)) as { message?: unknown; conversationId?: unknown; tz?: unknown };
   const message = typeof body.message === "string" ? body.message.trim() : "";
@@ -46,6 +53,10 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   const conversationId = typeof body.conversationId === "string" ? body.conversationId : undefined;
   if (conversationId && !store.getConversation(conversationId)) return json(res, 404, { error: "unknown conversation" });
   const tz = isValidTimeZone(body.tz) ? body.tz : Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (conversationId && busy.has(conversationId)) {
+    return json(res, 409, { error: "Still answering the previous message in this conversation." });
+  }
+  if (conversationId) busy.add(conversationId);
 
   res.writeHead(200, {
     "content-type": "text/event-stream",
@@ -56,7 +67,9 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
   res.on("close", () => {
     if (!res.writableFinished) abort.abort();
   });
+  let lockedId = conversationId;
   const send = (e: AgentEvent) => {
+    if (e.type === "meta" && !lockedId) busy.add((lockedId = e.conversationId));
     if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`);
   };
   const heartbeat = setInterval(() => res.write(": ping\n\n"), 15_000);
@@ -66,6 +79,7 @@ async function handleChat(req: IncomingMessage, res: ServerResponse): Promise<vo
     send({ type: "error", message: errorMessage(err) });
   } finally {
     clearInterval(heartbeat);
+    if (lockedId) busy.delete(lockedId);
     res.end();
   }
 }
@@ -111,5 +125,11 @@ server.listen(config.port, () => {
   console.log(`  model: ${config.chatModel} (effort ${config.chatEffort}) · memory: ${config.dataFile}`);
   if (!process.env.ANTHROPIC_API_KEY && !process.env.ANTHROPIC_AUTH_TOKEN) {
     console.warn("  ⚠ ANTHROPIC_API_KEY is not set. Copy .env.example to .env and add your key.\n");
+    return;
   }
+  // Finish any fact extraction a previous run was interrupted in the middle of.
+  agent
+    .recoverPendingExtractions()
+    .then((n) => n && console.log(`  recovered ${n} pending fact extraction(s)`))
+    .catch((e) => console.warn("  extraction recovery failed:", errorMessage(e)));
 });

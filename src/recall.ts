@@ -34,6 +34,8 @@ export interface RecallHit {
   in_current_conversation: boolean;
   you_asked: string;
   i_answered: string;
+  /** Present only when the answer did not complete; such answers are not a reliable baseline. */
+  answer_status?: string;
   about?: string[];
   user_decisions?: string[];
   facts_stated?: Fact[];
@@ -86,19 +88,15 @@ export function exchanges(store: Store): Exchange[] {
   const convById = new Map(store.listConversations().map((c) => [c.id, c]));
   const out: Exchange[] = [];
   const turns = store.allTurns();
-  for (let i = 0; i < turns.length; i++) {
-    const t = turns[i];
+  // Answers are linked to their question explicitly (replyTo), never by order:
+  // with overlapping requests "the next assistant turn" can belong to another question.
+  const answerFor = new Map<string, Turn>();
+  for (const t of turns) if (t.role === "assistant" && t.replyTo) answerFor.set(t.replyTo, t);
+  for (const t of turns) {
     if (t.role !== "user") continue;
     const conversation = convById.get(t.conversationId);
     if (!conversation) continue;
-    // The answer is the next assistant turn in the same conversation.
-    let answer: Turn | undefined;
-    for (let j = i + 1; j < turns.length; j++) {
-      if (turns[j].conversationId !== t.conversationId) continue;
-      if (turns[j].role === "assistant") answer = turns[j];
-      break;
-    }
-    out.push({ conversation, question: t, answer });
+    out.push({ conversation, question: t, answer: answerFor.get(t.id) });
   }
   return out;
 }
@@ -170,7 +168,8 @@ export function recall(
     conversation: e.conversation.title,
     in_current_conversation: e.conversation.id === opts.currentConversationId,
     you_asked: e.question.text,
-    i_answered: truncate(e.answer?.text ?? "(no answer was recorded)", 2500),
+    i_answered: truncate(e.answer?.text || "(no answer was recorded)", 2500),
+    answer_status: e.answer?.status && e.answer.status !== "completed" ? e.answer.status : undefined,
     about: e.answer?.entities?.length ? e.answer.entities : undefined,
     user_decisions: e.answer?.decisions?.length ? e.answer.decisions : undefined,
     facts_stated: e.answer?.facts?.length ? e.answer.facts : undefined,
