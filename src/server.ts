@@ -22,6 +22,7 @@ const STATIC: Record<string, string> = {
   "/app.js": "public/app.js",
   "/style.css": "public/style.css",
   "/vendor/marked.js": "node_modules/marked/lib/marked.esm.js",
+  "/vendor/purify.js": "node_modules/dompurify/dist/purify.es.mjs",
 };
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",

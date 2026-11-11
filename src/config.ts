@@ -30,8 +30,6 @@ export const config = {
   effort: effort(process.env.CHAT_EFFORT, DEFAULTS.effort),
   port: Number(process.env.PORT ?? 3000),
   dataFile: process.env.DATA_FILE ?? "data/memory.json",
-  /** Max model round-trips per turn (memory tool calls). Search runs server-side inside one round-trip. */
-  maxIterations: 8,
   /** How many prior turns of the *current* conversation are replayed verbatim. */
   historyTurns: 30,
 };

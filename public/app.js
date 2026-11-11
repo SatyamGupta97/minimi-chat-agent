@@ -1,3 +1,4 @@
+import DOMPurify from "/vendor/purify.js";
 import { marked } from "/vendor/marked.js";
 
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -26,7 +27,14 @@ marked.use({
   },
 });
 
+// Defence in depth: the renderer above already escapes raw HTML and filters
+// links; DOMPurify then sanitizes the final HTML (the answer is shaped by
+// untrusted web pages). Both live and reopened answers go through here.
 function renderMarkdown(text, sources) {
+  return DOMPurify.sanitize(renderUnsafe(text, sources), { ADD_ATTR: ["target"], ALLOWED_URI_REGEXP: /^https?:/i });
+}
+
+function renderUnsafe(text, sources) {
   let html = marked.parse(text);
   // Turn [n] citation markers into links to the matching source.
   if (sources?.length) {

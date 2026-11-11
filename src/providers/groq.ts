@@ -2,7 +2,7 @@ import Groq from "groq-sdk";
 import type { ChatCompletionChunk, ChatCompletionMessageParam, ChatCompletionTool } from "groq-sdk/resources/chat/completions";
 import { z, type ZodType } from "zod";
 import type { Source } from "../store.ts";
-import type { Citations, ChatSession, Provider, StepResult, StepSink, ToolCall, TurnSetup } from "./types.ts";
+import type { Citations, Provider, StepResult, StepSink, TurnSetup } from "./types.ts";
 
 // The API also sends `name` ("browser.search", "browser.open", ...); the SDK type omits it.
 type ExecutedTool = NonNullable<ChatCompletionChunk.Choice.Delta["executed_tools"]>[number] & { name?: string };
@@ -144,72 +144,49 @@ export class GroqProvider implements Provider {
     return this.apiKey ? null : "GROQ_API_KEY is not set. Copy .env.example to .env and add your key.";
   }
 
-  startTurn(setup: TurnSetup): ChatSession {
+  async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {
     const messages: ChatCompletionMessageParam[] = [{ role: "system", content: setup.system }];
     for (const h of setup.history) messages.push({ role: h.role, content: h.text });
     // Per-turn context in the newest user message keeps the earlier prefix identical.
     messages.push({ role: "user", content: `<context source="app, not the user">\n${setup.context}\n</context>\n\n${setup.message}` });
-    const tools: ChatCompletionTool[] = [
-      { type: "browser_search" } as unknown as ChatCompletionTool, // built-in; the SDK's tool type only models functions
-      ...setup.tools.map((t): ChatCompletionTool => ({ type: "function", function: { name: t.name, description: t.description, parameters: t.parameters } })),
-    ];
-    const { client, chatModel, effort } = this;
     const { sink, citations } = setup;
 
-    return {
-      async step(signal?: AbortSignal): Promise<StepResult> {
-        const stream = await client.chat.completions.create(
-          { model: chatModel, messages, tools, stream: true, reasoning_effort: effort, max_completion_tokens: 16_000 },
-          { signal },
-        );
-        const cursors = new Map<number, ExecutedTool>(); // browser cursor -> page (this step only)
-        const announced = new Set<number>();
-        const rewriter = new MarkerRewriter((c, a, b) => sourcesAt(cursors.get(c), a, b), citations);
-        const calls: { id: string; name: string; args: string }[] = [];
-        let raw = "";
-        let text = "";
-        let finish: string | null = null;
-        const emit = (s: string) => {
-          if (!s) return;
-          text += s;
-          sink.text(s);
-        };
-
-        for await (const chunk of stream) {
-          const ch = chunk.choices[0];
-          if (!ch) continue;
-          for (const t of ch.delta.executed_tools ?? []) onTool(t, cursors, announced, sink);
-          for (const tc of ch.delta.tool_calls ?? []) {
-            const c = (calls[tc.index] ??= { id: "", name: "", args: "" });
-            if (tc.id) c.id = tc.id;
-            if (tc.function?.name) c.name += tc.function.name;
-            if (tc.function?.arguments) c.args += tc.function.arguments;
-          }
-          if (ch.delta.content) {
-            raw += ch.delta.content;
-            emit(rewriter.feed(ch.delta.content));
-          }
-          if (ch.finish_reason) finish = ch.finish_reason;
-        }
-        emit(rewriter.flush());
-
-        const parsed: ToolCall[] = calls.filter(Boolean).map((c) => ({ id: c.id, name: c.name, args: safeJson(c.args) }));
-        if (parsed.length) {
-          messages.push({
-            role: "assistant",
-            content: raw || null,
-            tool_calls: calls.filter(Boolean).map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.args } })),
-          });
-          return { text, calls: parsed, finish: "tool_calls" };
-        }
-        if (finish === "length") return { text, calls: [], finish: "length" };
-        if (finish === "content_filter") return { text, calls: [], finish: "blocked" };
-        return { text, calls: [], finish: finish === "stop" || finish === null ? "stop" : "other" };
+    const stream = await this.client.chat.completions.create(
+      {
+        model: this.chatModel,
+        messages,
+        // The agent's only tool: Groq's built-in browser search (the SDK's tool type only models functions).
+        tools: [{ type: "browser_search" } as unknown as ChatCompletionTool],
+        stream: true,
+        reasoning_effort: this.effort,
+        max_completion_tokens: 16_000,
       },
-      addToolResults(results) {
-        for (const { call, output } of results) messages.push({ role: "tool", tool_call_id: call.id, content: JSON.stringify(output) });
-      },
+      { signal },
+    );
+    const cursors = new Map<number, ExecutedTool>(); // browser cursor -> page
+    const announced = new Set<number>();
+    const rewriter = new MarkerRewriter((c, a, b) => sourcesAt(cursors.get(c), a, b), citations);
+    let text = "";
+    let finish: string | null = null;
+    const emit = (s: string) => {
+      if (!s) return;
+      text += s;
+      sink.text(s);
     };
+
+    for await (const chunk of stream) {
+      const ch = chunk.choices[0];
+      if (!ch) continue;
+      for (const t of ch.delta.executed_tools ?? []) onTool(t, cursors, announced, sink);
+      if (ch.delta.content) emit(rewriter.feed(ch.delta.content));
+      if (ch.finish_reason) finish = ch.finish_reason;
+    }
+    emit(rewriter.flush());
+
+    if (finish === "length") return { text, finish: "length" };
+    if (finish === "content_filter") return { text, finish: "blocked" };
+    // Only an explicit "stop" is a completed answer; a stream that ended without a reason is not.
+    return { text, finish: finish === "stop" ? "stop" : "other" };
   }
 
   async json<T>(prompt: string, schema: ZodType<T>, opts?: { strong?: boolean }): Promise<T> {

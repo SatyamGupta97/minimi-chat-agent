@@ -122,7 +122,7 @@ export function recall(
   store: Store,
   q: RecallQuery,
   tz: string,
-  opts: { currentConversationId?: string; excludeTurnIds?: Set<string> } = {},
+  opts: { currentConversationId?: string; excludeTurnIds?: Set<string>; answerChars?: number } = {},
 ): RecallResult {
   const all = exchanges(store).filter((e) => !opts.excludeTurnIds?.has(e.question.id));
   const dateOf = (e: Exchange) => localDate(new Date(e.question.at), tz);
@@ -170,7 +170,7 @@ export function recall(
     conversation: e.conversation.title,
     in_current_conversation: e.conversation.id === opts.currentConversationId,
     you_asked: e.question.text,
-    i_answered: truncate(e.answer?.text || "(no answer was recorded)", 2500),
+    i_answered: truncate(e.answer?.text || "(no answer was recorded)", opts.answerChars ?? 2500),
     answer_status: e.answer?.status && e.answer.status !== "completed" ? e.answer.status : undefined,
     pairing: e.answer?.replyToInferred ? "inferred" : undefined,
     about: e.answer?.entities?.length ? e.answer.entities : undefined,
@@ -204,6 +204,6 @@ export function memoryDigest(store: Store, tz: string, currentConversationId: st
   const lines = withTurns
     .slice(0, max)
     .map(({ c, n }) => `- ${humanDateTime(new Date(c.createdAt), tz)}: "${c.title}" (${n} question${n > 1 ? "s" : ""})`);
-  const more = withTurns.length > max ? `\n- …and ${withTurns.length - max} older conversations (use recall_memory)` : "";
+  const more = withTurns.length > max ? `\n- …and ${withTurns.length - max} older conversations` : "";
   return `Memory: ${withTurns.length} previous conversation(s), most recent first:\n${lines.join("\n")}${more}`;
 }

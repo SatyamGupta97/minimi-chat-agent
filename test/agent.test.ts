@@ -65,7 +65,8 @@ function pendingTurn(s: Store) {
   const c = s.createConversation(new Date(), "Which Postgres host?");
   const at = new Date().toISOString();
   const q = s.addTurn({ conversationId: c.id, role: "user", text: "Which Postgres host?", at, tz });
-  return s.addTurn({ conversationId: c.id, role: "assistant", replyTo: q.id, status: "completed", text: "Neon Launch is $19/mo [1]", at, tz, extraction: "pending" });
+  return s.addTurn({ conversationId: c.id, role: "assistant", replyTo: q.id, status: "completed", text: "Neon Launch is $19/mo [1]", at, tz, extraction: "pending",
+    sources: [{ url: "https://neon.com/pricing", title: "neon.com" }] });
 }
 
 test("pending extractions are recovered on startup", async () => {
@@ -76,7 +77,11 @@ test("pending extractions are recovered on startup", async () => {
       title: "Postgres hosting",
       entities: ["Neon"],
       decisions: [],
-      facts: [{ subject: "Neon", attribute: "Launch price", value: "$19/mo", as_of: null, source: null }],
+      facts: [
+        { subject: "Neon", attribute: "Launch price", value: "$19/mo", as_of: null, source_number: 1 },
+        // A source the answer never cited must not become a URL.
+        { subject: "Neon", attribute: "Scale price", value: "$69/mo", as_of: null, source_number: 7 },
+      ],
     })),
     s,
   );
@@ -84,6 +89,8 @@ test("pending extractions are recovered on startup", async () => {
   const t = s.allTurns().find((x) => x.id === a.id)!;
   assert.equal(t.extraction, "done");
   assert.equal(t.facts?.[0].value, "$19/mo");
+  assert.equal(t.facts?.[0].sourceUrl, "https://neon.com/pricing");
+  assert.equal(t.facts?.[1].sourceUrl, null);
   assert.equal(s.getConversation(t.conversationId)?.title, "Postgres hosting");
 });
 
@@ -124,4 +131,19 @@ test("citations are placed after grounded segments, numbered stably across respo
   const meta2 = { groundingChunks: [{ web: { uri: "https://b", title: "supabase.com" } }], groundingSupports: [{ segment: { text: "Still $25." }, groundingChunkIndices: [0] }] };
   assert.equal(placeCitations("Still $25.", meta2, citations), "Still $25.[2]");
   assert.equal(cited.length, 2);
+});
+
+test("a repeated sentence keeps its citation on the later occurrence", async () => {
+  const { placeCitations } = await import("../src/providers/gemini.ts");
+  const cited: { url: string; title: string }[] = [];
+  const citations = { cite: (s: { url: string; title: string }) => cited.findIndex((c) => c.url === s.url) + 1 || cited.push(s) };
+  const text = "Neon costs $19. Supabase costs $25. Neon costs $19.";
+  const meta = {
+    groundingChunks: [{ web: { uri: "https://a", title: "a" } }, { web: { uri: "https://b", title: "b" } }],
+    groundingSupports: [
+      { segment: { text: "Supabase costs $25.", endIndex: 35 }, groundingChunkIndices: [0] },
+      { segment: { text: "Neon costs $19.", endIndex: 51 }, groundingChunkIndices: [1] },
+    ],
+  };
+  assert.equal(placeCitations(text, meta, citations), "Neon costs $19. Supabase costs $25.[1] Neon costs $19.[2]");
 });

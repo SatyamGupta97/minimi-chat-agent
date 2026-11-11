@@ -121,11 +121,20 @@ const provesClaim = (entity: string, stored: string): Check => [
       return c.verdict === "unverified"; // honest "couldn't verify" is acceptable, an unsupported verdict is not
     }),
 ];
+/** An entity discussed without a value must be addressed explicitly: unknown baseline, current value, evidence. Silence fails. */
 const noInventedBaseline = (entity: string): Check => [
-  `${entity}: no stored price, so verdict is unknown_baseline (no invented old value)`,
+  `${entity}: explicit unknown_baseline with a cited current value (no invented old value)`,
   (r) => {
     const cs = claimsFor(r, entity);
-    return cs.length === 0 || cs.every((c) => c.historicalValue === null && c.verdict !== "changed" && c.verdict !== "unchanged");
+    return cs.length > 0 && cs.every((c) => c.historicalValue === null && c.verdict === "unknown_baseline" && !!c.currentValue && c.evidenceUrls.length > 0);
+  },
+];
+/** A stable fact must be explicitly confirmed with today's evidence, not merely "not marked changed". */
+const confirmedUnchanged = (entity: string): Check => [
+  `${entity}: explicit "unchanged" verdict with cited evidence`,
+  (r) => {
+    const cs = claimsFor(r, entity);
+    return cs.length > 0 && cs.every((c) => c.verdict === "unchanged" && c.evidenceUrls.length > 0);
   },
 ];
 const completed: Check = ["completed", (r) => r.status === "completed"];
@@ -157,7 +166,7 @@ const SCENARIOS: Scenario[] = [
     history: [{ at: lastWeekday(2, now), ...POSTGRES }],
     ask: "Last Tuesday I asked you about Postgres hosting. Has any pricing changed since then?",
     judge: true,
-    checks: [recalledAround(lastWeekday(2, now)), provesClaim("Neon", "$19/mo"), provesClaim("Supabase", "$25/mo"), searched, cites, completed],
+    checks: [recalledAround(lastWeekday(2, now)), provesClaim("Neon", "$19/mo"), provesClaim("Supabase", "$25/mo"), noInventedBaseline("Render"), searched, cites, completed],
   },
   {
     id: "crm-shortlist-per-product",
@@ -181,6 +190,7 @@ const SCENARIOS: Scenario[] = [
     checks: [
       recalledExactly(daysAgo(4, now)),
       ["no claim marked changed", (r) => !(r.judgement?.claims ?? []).some((c) => c.verdict === "changed")],
+      confirmedUnchanged("Python"),
       completed,
     ],
   },

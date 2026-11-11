@@ -38,7 +38,7 @@ export function lastWeekday(weekday: number, from = new Date(), hour = 11): Date
 
 export const POSTGRES: Omit<Fixture, "at"> = {
   question: "What are the main managed Postgres hosting options and what do the entry-level paid plans cost?",
-  answer: `${SYNTHETIC_NOTE}\n\nNeon Launch: $19/mo [1]. Supabase Pro: $25/mo [2]. AWS RDS: usage-based, no fixed entry plan.`,
+  answer: `${SYNTHETIC_NOTE}\n\nNeon Launch: $19/mo [1]. Supabase Pro: $25/mo [2]. AWS RDS: usage-based, no fixed entry plan. Render also offers managed Postgres, but I didn't find its price.`,
   sources: [
     { url: "https://neon.com/pricing", title: "neon.com" },
     { url: "https://supabase.com/pricing", title: "supabase.com" },
@@ -77,12 +77,15 @@ export const STABLE: Omit<Fixture, "at"> = {
   ],
 };
 
-export function seedFixture(store: Store, f: Fixture, tz: string): void {
-  const c = store.createConversation(f.at, f.question.slice(0, 50));
+/** Inserts the fixture; with an `id`, does nothing if that conversation already exists (idempotent seeding). */
+export function seedFixture(store: Store, f: Fixture, tz: string, id?: string): boolean {
+  if (id && store.getConversation(id)) return false;
+  const c = store.createConversation(f.at, f.question.slice(0, 50), id);
   const at = f.at.toISOString();
   const q = store.addTurn({ conversationId: c.id, role: "user", text: f.question, at, tz });
   store.addTurn({
     conversationId: c.id, role: "assistant", replyTo: q.id, status: "completed", text: f.answer, at, tz,
     sources: f.sources ?? [], facts: f.facts ?? [], entities: f.entities ?? [], decisions: f.decisions ?? [], extraction: "done",
   });
+  return true;
 }

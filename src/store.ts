@@ -171,9 +171,9 @@ export class Store {
     return this.db.conversations.find((c) => c.id === id);
   }
 
-  createConversation(now: Date, title = "New chat"): Conversation {
+  createConversation(now: Date, title = "New chat", id: string = randomUUID()): Conversation {
     const c: Conversation = {
-      id: randomUUID(),
+      id,
       title,
       createdAt: now.toISOString(),
       updatedAt: now.toISOString(),

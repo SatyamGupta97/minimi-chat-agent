@@ -19,11 +19,13 @@ import { CRM, lastWeekday, POSTGRES, seedFixture } from "./fixtures.ts";
 const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const store = new Store(config.dataFile);
 const items = [
-  { at: lastWeekday(2), ...POSTGRES },
-  { at: lastWeekday(1, new Date(), 15), ...CRM },
+  { id: "seed-postgres", at: lastWeekday(2), ...POSTGRES },
+  { id: "seed-crm", at: lastWeekday(1, new Date(), 15), ...CRM },
 ];
-for (const f of items) {
-  seedFixture(store, f, tz);
-  console.log(`  + ${f.at.toDateString()}: ${f.question}`);
+let added = 0;
+for (const { id, ...f } of items) {
+  const ok = seedFixture(store, f, tz, id);
+  added += Number(ok);
+  console.log(`  ${ok ? "+" : "="} ${f.at.toDateString()}: ${f.question}${ok ? "" : " (already seeded)"}`);
 }
-console.log(`\nSeeded ${items.length} synthetic conversations into ${config.dataFile}. Start the app with \`npm run dev\`.`);
+console.log(`\n${added} synthetic conversation(s) added to ${config.dataFile}. Start the app with \`npm run dev\`.`);

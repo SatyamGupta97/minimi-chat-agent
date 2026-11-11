@@ -1,9 +1,9 @@
-import { z } from "zod";
 import { config } from "./config.ts";
 import { extractFacts } from "./extract.ts";
+import { lookupMemory } from "./memory-context.ts";
 import { SYSTEM_PROMPT, turnContext } from "./prompt.ts";
-import type { HistoryItem, Provider, ToolCall, ToolSpec } from "./providers/types.ts";
-import { memoryDigest, recall } from "./recall.ts";
+import type { HistoryItem, Provider, TurnSetup } from "./providers/types.ts";
+import { memoryDigest } from "./recall.ts";
 import type { Source, Store, Turn, TurnStatus } from "./store.ts";
 import { humanDateTime, temporalContext } from "./time.ts";
 
@@ -31,29 +31,6 @@ export interface TurnInput {
 }
 
 const MAX_EXTRACTION_ATTEMPTS = 3;
-
-const RecallInput = z.object({
-  query: z.string().optional(),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  limit: z.number().int().min(1).max(20).optional(),
-});
-
-const RECALL_TOOL: ToolSpec = {
-  name: "recall_memory",
-  description:
-    "Search the user's past conversations with you. Returns matching exchanges (when, what they asked, what you answered, what it was about, what the user decided, the facts you stated, the sources you cited) plus an overview of what memory exists. Give a date range (inclusive, user's local dates) when the user refers to a time, a topic query when they refer to a subject, or both. Results already in the current conversation are flagged. Answers with answer_status other than 'completed' were cut off and are not a reliable baseline. pairing 'inferred' means the question/answer link was reconstructed from old data.",
-  parameters: {
-    type: "object",
-    properties: {
-      query: { type: "string", description: "Topic keywords, e.g. 'postgres hosting pricing'. Omit to list everything in the date range." },
-      from: { type: "string", description: "Start date YYYY-MM-DD (inclusive)" },
-      to: { type: "string", description: "End date YYYY-MM-DD (inclusive)" },
-      limit: { type: "integer", description: "Max exchanges to return (default 8, max 20)" },
-    },
-    additionalProperties: false,
-  },
-};
 
 const INTERRUPTED_NOTE: Record<Exclude<TurnStatus, "completed">, string> = {
   incomplete: "(My previous answer was cut off before it finished.)",
@@ -115,12 +92,15 @@ export class Agent {
     let status: TurnStatus = "incomplete"; // proven "completed" only by a clean stop
     let note = "";
 
-    const session = this.provider.startTurn({
+    // Memory is looked up by the app, before the model runs (web search is the model's only tool).
+    const memory = lookupMemory(this.store, input.message, now, tz, { currentConversationId: convId, excludeTurnIds: new Set([userTurn.id]) });
+    for (const q of memory.queries) emit({ type: "status", kind: "recall", detail: describeRecall(q), args: q });
+
+    const setup: TurnSetup = {
       system: SYSTEM_PROMPT,
       history: history(prior, tz),
-      context: turnContext(temporalContext(now, tz), memoryDigest(this.store, tz, convId)),
+      context: turnContext(temporalContext(now, tz), memoryDigest(this.store, tz, convId), memory.text),
       message: `[sent ${humanDateTime(now, tz)}]\n${input.message}`,
-      tools: [RECALL_TOOL],
       citations: {
         cite(s) {
           let i = cited.findIndex((c) => c.url === s.url);
@@ -138,31 +118,17 @@ export class Agent {
         read: (s) => void (read.has(s.url) || read.set(s.url, s)),
         suggestions: (html) => void (suggestions = html),
       },
-    });
+    };
 
     try {
       const missing = this.provider.missingConfig();
       if (missing) throw new Error(missing);
-      let finished = false;
-      for (let iter = 0; iter < config.maxIterations && !finished; iter++) {
-        if (answer && !answer.endsWith("\n")) {
-          answer += "\n\n";
-          emit({ type: "text", text: "\n\n" });
-        }
-        const step = await session.step(input.signal);
-        answer += step.text;
-
-        if (step.finish === "tool_calls") {
-          for (const c of step.calls) if (c.name === RECALL_TOOL.name) emit({ type: "status", kind: "recall", detail: describeRecall(c.args), args: c.args });
-          session.addToolResults(step.calls.map((call) => ({ call, output: this.runTool(call, tz, convId, userTurn.id) })));
-          continue;
-        }
-        finished = true;
-        if (step.finish === "stop") status = answer.trim() ? "completed" : "incomplete";
-        else if (step.finish === "length") note = "\n\n_(Cut off at the length limit. Ask me to continue.)_";
-        else if (step.finish === "blocked" && !answer.trim()) answer = "Sorry, I can't help with that one.";
-      }
-      if (!finished) note = "\n\n_(I hit my step limit for one answer before finishing. Ask me to continue.)_";
+      const step = await this.provider.answer(setup, input.signal);
+      answer = step.text;
+      if (step.finish === "stop") status = answer.trim() ? "completed" : "incomplete";
+      else if (step.finish === "length") note = "\n\n_(Cut off at the length limit. Ask me to continue.)_";
+      else if (step.finish === "blocked" && !answer.trim()) answer = "Sorry, I can't help with that one.";
+      else if (step.finish === "other") note = "\n\n_(The answer ended unexpectedly and may be incomplete.)_";
     } catch (err) {
       if (input.signal?.aborted) {
         status = "cancelled";
@@ -203,13 +169,6 @@ export class Agent {
     if (assistantTurn.extraction === "pending") void this.extract(assistantTurn.id, isNew);
   }
 
-  private runTool(call: ToolCall, tz: string, convId: string, userTurnId: string): unknown {
-    if (call.name !== RECALL_TOOL.name) return { error: `Unknown tool ${call.name}` };
-    const parsed = RecallInput.safeParse(call.args ?? {});
-    if (!parsed.success) return { error: `Invalid input: ${parsed.error.message}` };
-    return recall(this.store, parsed.data, tz, { currentConversationId: convId, excludeTurnIds: new Set([userTurnId]) });
-  }
-
   /**
    * Extract facts for one answer. The pending state is persisted before this
    * runs, so a crash or restart mid-extraction is recovered by
@@ -245,8 +204,8 @@ export class Agent {
   }
 }
 
-function describeRecall(input: unknown): string {
-  const i = (input ?? {}) as { query?: string; from?: string; to?: string };
-  const range = i.from || i.to ? (i.from === i.to ? `on ${i.from}` : `${i.from ?? "…"} → ${i.to ?? "…"}`) : "";
-  return [i.query ? `"${i.query}"` : "", range].filter(Boolean).join(" ") || "all conversations";
+function describeRecall(q: { phrase?: string; from?: string; to?: string }): string {
+  if (!q.from && !q.to) return "past conversations on this topic";
+  const range = q.from === q.to ? (q.from ?? "") : `${q.from ?? "…"} → ${q.to ?? "…"}`;
+  return q.phrase ? `"${q.phrase}" → ${range}` : range;
 }

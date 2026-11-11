@@ -1,15 +1,6 @@
-import {
-  ApiError,
-  type Content,
-  FinishReason,
-  FunctionCallingConfigMode,
-  GoogleGenAI,
-  type GroundingMetadata,
-  type Part,
-  ThinkingLevel,
-} from "@google/genai";
+import { ApiError, type Content, FinishReason, GoogleGenAI, type GroundingMetadata, ThinkingLevel } from "@google/genai";
 import { z, type ZodType } from "zod";
-import type { Citations, ChatSession, Provider, StepResult, ToolCall, TurnSetup } from "./types.ts";
+import type { Citations, Provider, StepResult, TurnSetup } from "./types.ts";
 
 const LEVEL = { low: ThinkingLevel.LOW, medium: ThinkingLevel.MEDIUM, high: ThinkingLevel.HIGH } as const;
 
@@ -32,9 +23,19 @@ export function placeCitations(text: string, meta: GroundingMetadata | undefined
     const seg = sup.segment;
     if (!seg) continue;
     // Prefer matching the segment text (robust to how parts were split while
-    // streaming); fall back to the byte offset.
-    let at = seg.text ? text.indexOf(seg.text, Math.max(0, cursor - seg.text.length)) : -1;
-    at = at >= 0 ? at + seg.text!.length : seg.endIndex != null ? byteToCharIndex(text, seg.endIndex) : -1;
+    // streaming), searching only FORWARD from the previous segment so a repeated
+    // sentence never pulls a citation back to its first occurrence. A second
+    // support for the segment just placed ends at the cursor. Fall back to the
+    // byte offset.
+    let at = -1;
+    if (seg.text) {
+      if (cursor >= seg.text.length && text.slice(cursor - seg.text.length, cursor) === seg.text) at = cursor;
+      else {
+        const i = text.indexOf(seg.text, cursor);
+        if (i >= 0) at = i + seg.text.length;
+      }
+    }
+    if (at < 0 && seg.endIndex != null) at = byteToCharIndex(text, seg.endIndex);
     if (at < 0) continue;
     cursor = at;
     const nums: number[] = [];
@@ -76,7 +77,7 @@ export class GeminiProvider implements Provider {
     return this.apiKey ? null : "GEMINI_API_KEY is not set. Copy .env.example to .env and add your key.";
   }
 
-  startTurn(setup: TurnSetup): ChatSession {
+  async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {
     const contents: Content[] = [];
     const push = (role: "user" | "model", text: string) => {
       const last = contents[contents.length - 1];
@@ -88,73 +89,51 @@ export class GeminiProvider implements Provider {
     // stays byte-identical between turns (keeps the implicit prefix cache warm).
     push("user", `<context source="app, not the user">\n${setup.context}\n</context>`);
     push("user", setup.message);
-    const { client, chatModel, effort } = this;
     const { sink, citations } = setup;
 
-    return {
-      async step(signal?: AbortSignal): Promise<StepResult> {
-        const stream = await client.models.generateContentStream({
-          model: chatModel,
-          contents,
-          config: {
-            systemInstruction: setup.system,
-            // Google Search (server-side, inside this call) + our function tools (client-side).
-            tools: [{ googleSearch: {} }, { functionDeclarations: setup.tools.map((t) => ({ name: t.name, description: t.description, parametersJsonSchema: t.parameters })) }],
-            toolConfig: {
-              includeServerSideToolInvocations: true, // surface search calls so the UI can show them
-              functionCallingConfig: { mode: FunctionCallingConfigMode.VALIDATED }, // required to combine built-in tools + functions
-            },
-            thinkingConfig: { thinkingLevel: LEVEL[effort] },
-            maxOutputTokens: 32_000,
-            abortSignal: signal,
-          },
-        });
-
-        const parts: Part[] = []; // the model's turn, kept verbatim (thought signatures included)
-        let text = "";
-        let meta: GroundingMetadata | undefined;
-        let finish: FinishReason | undefined;
-        let blocked = false;
-        for await (const chunk of stream) {
-          if (chunk.promptFeedback?.blockReason) blocked = true;
-          const cand = chunk.candidates?.[0];
-          if (!cand) continue;
-          for (const p of cand.content?.parts ?? []) {
-            parts.push(p);
-            if (p.text && !p.thought) {
-              text += p.text;
-              sink.text(p.text);
-            }
-            if (p.toolCall) queriesOf(p.toolCall.args).forEach((q) => sink.search(q));
-          }
-          if (cand.groundingMetadata) meta = cand.groundingMetadata;
-          if (cand.finishReason) finish = cand.finishReason;
-        }
-
-        (meta?.webSearchQueries ?? []).forEach((q) => sink.search(q));
-        for (const c of meta?.groundingChunks ?? []) if (c.web?.uri) sink.read({ url: c.web.uri, title: c.web.title ?? c.web.uri });
-        if (meta?.searchEntryPoint?.renderedContent) sink.suggestions(meta.searchEntryPoint.renderedContent);
-
-        const calls: ToolCall[] = parts
-          .filter((p) => p.functionCall)
-          .map((p, i) => ({ id: p.functionCall!.id ?? `call_${i}`, name: p.functionCall!.name ?? "", args: p.functionCall!.args ?? {} }));
-        if (calls.length) contents.push({ role: "model", parts });
-
-        const out = placeCitations(text, meta, citations);
-        if (calls.length) return { text: out, calls, finish: "tool_calls" };
-        if (blocked || finish === FinishReason.SAFETY || finish === FinishReason.PROHIBITED_CONTENT || finish === FinishReason.BLOCKLIST) {
-          return { text: out, calls, finish: "blocked" };
-        }
-        if (finish === FinishReason.MAX_TOKENS) return { text: out, calls, finish: "length" };
-        return { text: out, calls, finish: finish === FinishReason.STOP || finish === undefined ? "stop" : "other" };
+    const stream = await this.client.models.generateContentStream({
+      model: this.chatModel,
+      contents,
+      config: {
+        systemInstruction: setup.system,
+        tools: [{ googleSearch: {} }], // the agent's only tool
+        toolConfig: { includeServerSideToolInvocations: true }, // surface search calls so the UI can show them
+        thinkingConfig: { thinkingLevel: LEVEL[this.effort] },
+        maxOutputTokens: 32_000,
+        abortSignal: signal,
       },
-      addToolResults(results) {
-        contents.push({
-          role: "user",
-          parts: results.map(({ call, output }) => ({ functionResponse: { id: call.id, name: call.name, response: { output } } })),
-        });
-      },
-    };
+    });
+
+    let text = "";
+    let meta: GroundingMetadata | undefined;
+    let finish: FinishReason | undefined;
+    let blocked = false;
+    for await (const chunk of stream) {
+      if (chunk.promptFeedback?.blockReason) blocked = true;
+      const cand = chunk.candidates?.[0];
+      if (!cand) continue;
+      for (const p of cand.content?.parts ?? []) {
+        if (p.text && !p.thought) {
+          text += p.text;
+          sink.text(p.text);
+        }
+        if (p.toolCall) queriesOf(p.toolCall.args).forEach((q) => sink.search(q));
+      }
+      if (cand.groundingMetadata) meta = cand.groundingMetadata;
+      if (cand.finishReason) finish = cand.finishReason;
+    }
+
+    (meta?.webSearchQueries ?? []).forEach((q) => sink.search(q));
+    for (const c of meta?.groundingChunks ?? []) if (c.web?.uri) sink.read({ url: c.web.uri, title: c.web.title ?? c.web.uri });
+    if (meta?.searchEntryPoint?.renderedContent) sink.suggestions(meta.searchEntryPoint.renderedContent);
+
+    const out = placeCitations(text, meta, citations);
+    if (blocked || finish === FinishReason.SAFETY || finish === FinishReason.PROHIBITED_CONTENT || finish === FinishReason.BLOCKLIST) {
+      return { text: out, finish: "blocked" };
+    }
+    if (finish === FinishReason.MAX_TOKENS) return { text: out, finish: "length" };
+    // Only an explicit STOP is a completed answer; a stream that ended without a reason is not.
+    return { text: out, finish: finish === FinishReason.STOP ? "stop" : "other" };
   }
 
   async json<T>(prompt: string, schema: ZodType<T>, opts?: { strong?: boolean }): Promise<T> {
@@ -175,7 +154,7 @@ export class GeminiProvider implements Provider {
     if (err.status === 400 && /api key/i.test(err.message)) return "Invalid GEMINI_API_KEY.";
     if (err.status === 401 || err.status === 403) return "GEMINI_API_KEY was rejected (invalid key or no access to this model).";
     if (err.status === 429 && /quota/i.test(err.message)) {
-      return "This Gemini API key has no quota left for this request. Google Search grounding (and Gemini 4) need a billing-enabled project: enable billing for the key's project in Google AI Studio.";
+      return "This Gemini API key has no quota for this request. On free keys that usually means Google Search grounding: it needs billing enabled on the key's project (Google AI Studio → billing).";
     }
     if (err.status === 429) return "Rate limited by the Gemini API. Try again in a moment.";
     return `Gemini API error ${err.status}: ${err.message}`;

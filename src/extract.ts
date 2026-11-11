@@ -26,7 +26,7 @@ const Extraction = z.object({
         attribute: z.string().describe("What about it, e.g. 'Launch plan price'"),
         value: z.string().describe("The stated value, verbatim where possible, e.g. '$19/month'"),
         as_of: z.string().nullable().describe("Date the fact applies from if the answer states one, else null"),
-        source: z.string().nullable().describe("Title/domain of the numbered source the answer cited for this fact, else null"),
+        source_number: z.number().int().nullable().describe("Number n of the source the answer cites for this fact (its [n] marker), else null"),
       }),
     )
     .describe("Time-sensitive, verifiable claims made in the answer (prices, limits, features, releases, dates, versions). Empty if none."),
@@ -43,7 +43,8 @@ export async function extractFacts(
     `Extract a short title, the entities discussed, the user's decisions/context, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
     Extraction,
   );
-  const urlFor = (n: string | null) => sources.find((s) => n && (s.title === n || s.url === n))?.url ?? null;
+  // Only a number that points at a source the answer actually cited becomes a URL; anything else is null.
+  const urlFor = (n: number | null) => (n !== null && n >= 1 && n <= sources.length ? sources[n - 1].url : null);
   return {
     title: out.title.trim().slice(0, 80),
     entities: out.entities.slice(0, 30),
@@ -53,7 +54,7 @@ export async function extractFacts(
       attribute: f.attribute,
       value: f.value,
       asOf: f.as_of,
-      sourceUrl: urlFor(f.source) ?? f.source,
+      sourceUrl: urlFor(f.source_number),
     })),
   };
 }

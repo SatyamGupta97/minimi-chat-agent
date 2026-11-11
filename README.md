@@ -36,9 +36,10 @@ Memory lives in `data/memory.json`. Delete it to start fresh.
 
 | File | What it does |
 |---|---|
-| `src/agent.ts` | The vendor-neutral turn loop: context, `recall_memory`, statuses, evidence, persistence |
+| `src/agent.ts` | The vendor-neutral turn: memory lookup, context, streaming, statuses, evidence, persistence |
 | `src/providers/` | One adapter per vendor (`groq.ts`, `gemini.ts`) behind a small `Provider` interface: streaming, built-in search, citation format, JSON calls |
 | `src/prompt.ts` | Frozen system prompt (search policy, memory rules, answer style) |
+| `src/dates.ts`, `src/memory-context.ts` | Deterministic date-phrase resolution and the pre-model memory lookup |
 | `src/recall.ts` | Date-range plus BM25-style retrieval over past exchanges, and the per-turn memory index |
 | `src/time.ts` | Timezone-correct local dates and the calendar given to the model |
 | `src/extract.ts` | Background extraction of title, entities, user decisions and checkable facts |
