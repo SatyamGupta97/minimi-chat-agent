@@ -19,7 +19,8 @@ export type AgentEvent =
   /** Vendor search UI that must be shown with grounded answers (Gemini only). */
   | { type: "suggestions"; html: string }
   | { type: "done"; turnId: string; status: TurnStatus; ms: number; searches: number }
-  | { type: "error"; message: string };
+  /** retryAfterMs is set when the vendor rate-limited the request. */
+  | { type: "error"; message: string; retryAfterMs?: number };
 
 export interface TurnInput {
   conversationId?: string;
@@ -137,7 +138,7 @@ export class Agent {
         note = "\n\n_(stopped)_";
       } else {
         status = "failed";
-        emit({ type: "error", message: this.errorMessage(err) });
+        emit({ type: "error", message: this.errorMessage(err), retryAfterMs: this.provider.retryAfterMs?.(err) });
       }
     }
 

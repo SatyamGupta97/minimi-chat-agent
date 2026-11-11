@@ -30,12 +30,12 @@ const parse = (ymd: string) => {
   return new Date(Date.UTC(y, m - 1, d));
 };
 const fmt = (d: Date) => d.toISOString().slice(0, 10);
-const addDays = (ymd: string, n: number) => {
+export const addDays = (ymd: string, n: number) => {
   const d = parse(ymd);
   d.setUTCDate(d.getUTCDate() + n);
   return fmt(d);
 };
-const weekday = (ymd: string) => parse(ymd).getUTCDay();
+export const weekday = (ymd: string) => parse(ymd).getUTCDay();
 /** Monday of the week containing `ymd`. */
 const mondayOf = (ymd: string) => addDays(ymd, -((weekday(ymd) + 6) % 7));
 

@@ -5,7 +5,11 @@
  * presented as real research: each answer says it is synthetic, so the agent
  * sees the label whenever it recalls one.
  */
+import { addDays, weekday } from "../src/dates.ts";
 import type { Fact, Source, Store } from "../src/store.ts";
+import { localDate, zonedTime } from "../src/time.ts";
+
+const machineTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
 export const SYNTHETIC_NOTE = "(Synthetic demo history: the values below are illustrative fixtures, not researched prices.)";
 
@@ -19,20 +23,19 @@ export interface Fixture {
   decisions?: string[];
 }
 
-/** Local-calendar arithmetic (setDate), so DST never skips or repeats a day. */
-export function daysAgo(n: number, from = new Date(), hour = 11): Date {
-  const d = new Date(from);
-  d.setDate(d.getDate() - n);
-  d.setHours(hour, 0, 0, 0);
-  return d;
+/**
+ * `hour`:00, `n` calendar days before `from`, in timezone `tz`. Calendar
+ * arithmetic (DST-safe), and in an explicit timezone, never the machine's: a
+ * replay must build the same fixture dates as the recording did, wherever it runs.
+ */
+export function daysAgo(n: number, from = new Date(), hour = 11, tz = machineTz): Date {
+  return zonedTime(addDays(localDate(from, tz), -n), hour, tz);
 }
 
-/** Most recent past `weekday` (0 = Sunday) strictly before `from`'s local date. */
-export function lastWeekday(weekday: number, from = new Date(), hour = 11): Date {
-  for (let n = 1; n <= 7; n++) {
-    const d = daysAgo(n, from, hour);
-    if (d.getDay() === weekday) return d;
-  }
+/** Most recent past `day` (0 = Sunday) strictly before `from`'s local date in `tz`. */
+export function lastWeekday(day: number, from = new Date(), hour = 11, tz = machineTz): Date {
+  const today = localDate(from, tz);
+  for (let n = 1; n <= 7; n++) if (weekday(addDays(today, -n)) === day) return zonedTime(addDays(today, -n), hour, tz);
   throw new Error("unreachable");
 }
 

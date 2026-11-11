@@ -215,6 +215,14 @@ export class GroqProvider implements Provider {
     return schema.parse(JSON.parse(res.choices[0]?.message.content ?? ""));
   }
 
+  retryAfterMs(err: unknown): number | undefined {
+    if (!(err instanceof Groq.APIError) || err.status !== 429) return undefined;
+    const header = Number(err.headers?.get?.("retry-after") ?? NaN);
+    if (Number.isFinite(header)) return header * 1000;
+    const m = err.message.match(/try again in (?:(\d+)h)?(?:(\d+)m)?([\d.]+)s/i); // "Please try again in 10m49.3s"
+    return m ? ((Number(m[1] ?? 0) * 60 + Number(m[2] ?? 0)) * 60 + Number(m[3])) * 1000 : 60_000;
+  }
+
   describeError(err: unknown): string | undefined {
     if (!(err instanceof Groq.APIError)) return undefined;
     if (err.status === 401) return "GROQ_API_KEY was rejected (invalid key).";

@@ -42,6 +42,7 @@ export class OllamaProvider implements Provider {
     const res = await this.post("/api/chat", { model: this.chatModel, messages, stream: true, think: false }, signal);
 
     let text = "";
+    let streaming = false; // becomes true once any reasoning block has closed
     let doneReason: string | undefined;
     let buf = "";
     const decoder = new TextDecoder();
@@ -57,7 +58,13 @@ export class OllamaProvider implements Provider {
         const piece = chunk.message?.content ?? "";
         if (piece) {
           text += piece;
-          setup.sink.text(piece);
+          // Don't stream reasoning: hold output until </think> closes it, then stream the answer.
+          if (streaming) setup.sink.text(piece);
+          else if (text.includes("</think>")) {
+            streaming = true;
+            const after = stripThinking(text);
+            if (after) setup.sink.text(after);
+          }
         }
         if (chunk.done) doneReason = chunk.done_reason;
       }
@@ -66,6 +73,7 @@ export class OllamaProvider implements Provider {
     // close it with </think>. The returned text replaces what was streamed, so
     // keep only the answer.
     const answer = stripThinking(text);
+    if (!streaming && answer) setup.sink.text(answer); // no reasoning block at all: release the buffered answer
     if (doneReason === "length") return { text: answer, finish: "length" };
     return { text: answer, finish: doneReason === "stop" ? "stop" : "other" };
   }

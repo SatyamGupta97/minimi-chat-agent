@@ -68,4 +68,6 @@ export interface Provider {
   json<T>(prompt: string, schema: ZodType<T>, opts?: { strong?: boolean }): Promise<T>;
   /** Friendly message for a vendor error, or undefined to fall back to the raw message. */
   describeError(err: unknown): string | undefined;
+  /** For a rate-limit error: how long the vendor says to wait. Undefined for other errors. */
+  retryAfterMs?(err: unknown): number | undefined;
 }

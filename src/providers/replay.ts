@@ -13,9 +13,13 @@ import type { Provider, StepResult, TurnSetup } from "./types.ts";
  *
  * Replaying feeds those back through the REAL app code: date resolution,
  * memory lookup, citation numbering, turn status, persistence and every eval
- * check all run for real. Only the model is canned. So a replay catches
- * regressions in the app, never changes in model behaviour, and a prompt
- * change needs a fresh live recording.
+ * check all run for real. Only the model is canned.
+ *
+ * Staleness is enforced, not just documented: each scenario stores a hash of
+ * the model's complete input (system prompt, history, context incl. memory
+ * lookup, message). If the app would now send the model anything different
+ * (prompt edited, context format changed, lookup results changed), replay
+ * refuses instead of passing old answers off as new results.
  */
 
 type Event =
@@ -25,22 +29,49 @@ type Event =
   | { t: "cite"; src: Source }
   | { t: "suggestions"; html: string };
 
+export interface ScenarioRecording {
+  /** The clock and timezone it ran with, so fixture dates and lookups match on replay. */
+  now: string;
+  tz: string;
+  /** Hash of everything the model was given; replay requires an exact match. */
+  inputHash?: string;
+  events: Event[];
+  result?: StepResult;
+  error?: string;
+  /** Set once the judge's verdict is recorded too (for judged scenarios). */
+  graded?: boolean;
+}
+
 export interface Recording {
   provider: string;
   model: string;
   webSearch: boolean;
-  /** Per scenario: the clock and timezone it ran with (so fixture dates and lookups match on replay), and what the model did. */
-  scenarios: Record<string, { now: string; tz: string; events: Event[]; result?: StepResult; error?: string }>;
+  scenarios: Record<string, ScenarioRecording>;
   json: Record<string, unknown>;
 }
 
+export class StaleRecordingError extends Error {}
+
 const hash = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
+const inputHash = (setup: TurnSetup) => hash(JSON.stringify([setup.system, setup.history, setup.context, setup.message]));
+
+function replayEvents(rec: ScenarioRecording, setup: TurnSetup): StepResult {
+  for (const e of rec.events) {
+    if (e.t === "text") setup.sink.text(e.s);
+    else if (e.t === "search") setup.sink.search(e.q);
+    else if (e.t === "read") setup.sink.read(e.src);
+    else if (e.t === "cite") setup.citations.cite(e.src); // same order as live, so [n] numbering matches
+    else setup.sink.suggestions(e.html);
+  }
+  if (rec.error) throw new Error(rec.error);
+  return rec.result!;
+}
 
 export class RecordingProvider implements Provider {
   readonly recording: Recording;
   private scenario = "";
 
-  /** Starts from `previous` (same provider) so scenarios can be recorded across several quota windows. */
+  /** Starts from `previous` (same provider/model) so scenarios can be recorded across several quota windows. */
   constructor(
     private inner: Provider,
     previous?: Recording,
@@ -55,9 +86,16 @@ export class RecordingProvider implements Provider {
   get chatModel() { return this.inner.chatModel; }
   get webSearch() { return this.inner.webSearch; }
 
+  /** Keeps an existing successful answer for this scenario (re-used if the input is unchanged). */
   begin(scenario: string, now: Date, tz: string): void {
     this.scenario = scenario;
-    this.recording.scenarios[scenario] = { now: now.toISOString(), tz, events: [] };
+    const prev = this.recording.scenarios[scenario];
+    if (!(prev?.result && !prev.error)) this.recording.scenarios[scenario] = { now: now.toISOString(), tz, events: [] };
+  }
+
+  markGraded(scenario: string): void {
+    const rec = this.recording.scenarios[scenario];
+    if (rec) rec.graded = true;
   }
 
   missingConfig() {
@@ -66,8 +104,17 @@ export class RecordingProvider implements Provider {
 
   async answer(setup: TurnSetup, signal?: AbortSignal): Promise<StepResult> {
     const rec = this.recording.scenarios[this.scenario];
-    rec.events = []; // a retry replaces the failed attempt
+    const h = inputHash(setup);
+    // Resuming: the answer was already recorded for this exact input; only grading is missing. Don't pay for it twice.
+    if (rec.result && !rec.error) {
+      if (!rec.inputHash) rec.inputHash = h; // recorded before fingerprints existed, earlier in this same recording session
+      if (rec.inputHash === h) return replayEvents(rec, setup);
+    }
+    rec.events = [];
+    delete rec.result;
     delete rec.error;
+    delete rec.graded;
+    rec.inputHash = h;
     const log = (e: Event) => rec.events.push(e);
     const sink = setup.sink;
     try {
@@ -92,6 +139,8 @@ export class RecordingProvider implements Provider {
   }
 
   async json<T>(prompt: string, schema: ZodType<T>, opts?: { strong?: boolean }): Promise<T> {
+    const cached = this.recording.json[hash(prompt)];
+    if (cached !== undefined) return schema.parse(cached);
     const out = await this.inner.json(prompt, schema, opts);
     this.recording.json[hash(prompt)] = out;
     return out;
@@ -99,6 +148,10 @@ export class RecordingProvider implements Provider {
 
   describeError(err: unknown) {
     return this.inner.describeError(err);
+  }
+
+  retryAfterMs(err: unknown) {
+    return this.inner.retryAfterMs?.(err);
   }
 }
 
@@ -124,25 +177,22 @@ export class ReplayProvider implements Provider {
 
   async answer(setup: TurnSetup): Promise<StepResult> {
     const rec = this.recording.scenarios[this.scenario];
-    if (!rec) throw new Error(`No recording for scenario "${this.scenario}". Re-record with: npm run eval:live`);
-    for (const e of rec.events) {
-      if (e.t === "text") setup.sink.text(e.s);
-      else if (e.t === "search") setup.sink.search(e.q);
-      else if (e.t === "read") setup.sink.read(e.src);
-      else if (e.t === "cite") setup.citations.cite(e.src); // same order as live, so [n] numbering matches
-      else setup.sink.suggestions(e.html);
+    if (!rec) throw new StaleRecordingError(`No recording for scenario "${this.scenario}". Run npm run eval:live to record it.`);
+    if (rec.inputHash !== inputHash(setup)) {
+      throw new StaleRecordingError(
+        "Recording is stale: the model's input changed since it was recorded (system prompt, context format, memory lookup or scenario). Run npm run eval:live -- --fresh to re-record.",
+      );
     }
-    if (rec.error) throw new Error(rec.error);
-    return rec.result!;
+    return replayEvents(rec, setup);
   }
 
   async json<T>(prompt: string, schema: ZodType<T>): Promise<T> {
     const out = this.recording.json[hash(prompt)];
-    if (out === undefined) throw new Error("No recorded output for this prompt (the app's prompt changed since recording). Re-record with: npm run eval:live");
+    if (out === undefined) throw new StaleRecordingError("No recorded judge output for this answer. Run npm run eval:live to record it.");
     return schema.parse(out);
   }
 
-  describeError() {
-    return undefined;
+  describeError(err: unknown) {
+    return err instanceof Error ? err.message : undefined;
   }
 }

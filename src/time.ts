@@ -74,3 +74,18 @@ export function temporalContext(now: Date, tz: string, days = 21): string {
     ...lines,
   ].join("\n");
 }
+
+/** Minutes east of UTC for `tz` at instant `d` (e.g. +330 for Asia/Kolkata). */
+function offsetMinutes(d: Date, tz: string): number {
+  const m = utcOffset(d, tz).match(/UTC([+-])(\d{2}):(\d{2})/);
+  return m ? (m[1] === "-" ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 0;
+}
+
+/** The instant that is `hour`:00 on local date `ymd` in `tz` (DST-safe). */
+export function zonedTime(ymd: string, hour: number, tz: string): Date {
+  const [y, m, d] = ymd.split("-").map(Number);
+  const wall = Date.UTC(y, m - 1, d, hour);
+  let t = wall;
+  for (let i = 0; i < 3; i++) t = wall - offsetMinutes(new Date(t), tz) * 60_000;
+  return new Date(t);
+}

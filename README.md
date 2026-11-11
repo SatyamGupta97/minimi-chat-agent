@@ -26,7 +26,7 @@ Requires Node 20.12+. You need one key from either provider:
 | Command | Needs | What it tests |
 |---|---|---|
 | `npm test` | nothing | Offline unit tests: date phrases and false positives, timezones/DST, memory lookup gating, recall, Q/A linking, migration, corrupt files, extraction recovery, citation parsing and placement |
-| `npm run eval` | nothing | Replays the committed recording (`eval/recordings/groq.json`) through the real app: date resolution, memory lookup, citation numbering, turn status and every eval check run for real; only the model's output is canned. Catches app regressions, not model drift |
+| `npm run eval` | nothing | Replays a recorded live run (`eval/recordings/groq.json`) through the real app: date resolution, memory lookup, citation numbering, turn status and every eval check run for real; only the model's output is canned. Refuses if anything the model would now receive differs from the recording (prompt, context, lookup), so a stale recording can't pass for a new result. **The Groq recording is still being made (free-tier budget); until it's committed this command reports it as missing.** |
 | `npm run eval:local` | [Ollama](https://ollama.com) + `ollama pull qwen3:4b` | The memory scenarios against a local model (no web search locally, so search scenarios are skipped). Integration testing; a 4B model is a weak judge, so treat claim-level checks as noisy |
 | `npm run eval:live` | a provider key | The full suite against the real model, re-recording `eval/recordings/<provider>.json`. Waits out free-tier rate limits. Run it before submitting or after prompt changes |
 
