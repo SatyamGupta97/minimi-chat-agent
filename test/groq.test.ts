@@ -58,3 +58,10 @@ test("markers split across stream chunks become stable [n] citations", () => {
   assert.equal(out, "Latest LTS is v26.13.0[1]. Release notes[2] and again[1]. Unknown dropped.");
   assert.equal(cited.length, 2);
 });
+
+test("local-model reasoning before </think> is dropped from the answer", async () => {
+  const { stripThinking } = await import("../src/providers/ollama.ts");
+  assert.equal(stripThinking("Okay, the user wants...\n</think>\n\nOn 10 Nov you asked X."), "On 10 Nov you asked X.");
+  assert.equal(stripThinking("<think>hmm</think>Answer"), "Answer");
+  assert.equal(stripThinking("Plain answer"), "Plain answer");
+});

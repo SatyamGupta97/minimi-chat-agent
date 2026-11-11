@@ -62,6 +62,7 @@ function queriesOf(args: Record<string, unknown> | undefined): string[] {
 
 export class GeminiProvider implements Provider {
   readonly name = "gemini";
+  readonly webSearch = true;
   private client: GoogleGenAI;
 
   constructor(

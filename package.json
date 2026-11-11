@@ -14,7 +14,9 @@
     "seed": "tsx scripts/seed.ts",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
-    "eval": "tsx scripts/eval.ts"
+    "eval": "tsx scripts/eval.ts",
+    "eval:local": "LLM_PROVIDER=ollama tsx scripts/eval.ts --live --no-record",
+    "eval:live": "tsx scripts/eval.ts --live"
   },
   "dependencies": {
     "@google/genai": "^3.1.0",

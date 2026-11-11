@@ -58,6 +58,8 @@ export interface TurnSetup {
 export interface Provider {
   readonly name: string;
   readonly chatModel: string;
+  /** Whether answers can use built-in web search (false for local models). */
+  readonly webSearch: boolean;
   /** Null when usable, else a message explaining what's missing. */
   missingConfig(): string | null;
   /** Run one streamed answer for this turn. */

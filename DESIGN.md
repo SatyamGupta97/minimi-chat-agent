@@ -36,9 +36,9 @@ POST /api/chat (SSE) → Agent.runTurn
 
 ## Evaluation
 
-`npm test` (offline): date phrases and false positives, timezones and DST, lookup gating, recall, `replyTo`, migration, corrupt files, extraction recovery, claim–citation adjacency, both citation formats.
+Four levels, and only the last needs a paid key. `npm test` runs offline unit tests (date phrases and false positives, DST, lookup gating, recall, `replyTo`, migration, corrupt files, extraction recovery, both citation formats). `npm run eval` replays a recorded live run through the real app, so lookup, citation numbering, statuses and checks are re-tested free. `eval:local` runs the memory scenarios on a local Ollama model (it has no search, so search scenarios are skipped). `eval:live` re-records against the real model.
 
-`npm run eval` (live): each scenario runs on fixture history. A judge turns each answer into per-claim records (`entity, historicalValue, currentValue, verdict, evidenceUrls`). The checks require proof: the old value matches memory, "changed" has two values plus evidence, an unknown baseline is explicit. Further scenarios cover exact date resolution, false premises, and recalled prompt injection.
+Each eval scenario runs on fixture history. A judge turns each answer into per-claim records (`entity, historicalValue, currentValue, verdict, evidenceUrls`). The checks require proof: the old value matches memory, "changed" has two values plus evidence, an unknown baseline is explicit. Further scenarios cover exact date resolution, false premises, and recalled prompt injection.
 
 ## With another week
 

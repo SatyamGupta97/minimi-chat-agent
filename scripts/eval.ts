@@ -1,15 +1,17 @@
 /**
- * End-to-end evals against the live model + Google Search.
+ * End-to-end evals of the test-set patterns, in three modes:
  *
- *   npm run eval              # all scenarios
- *   npm run eval -- crm       # scenarios whose id contains "crm"
+ *   npm run eval            replay the committed recording: real app code, canned model. No key, no network.
+ *   npm run eval:local      a local model via Ollama: no key; memory scenarios only (no web search locally)
+ *   npm run eval:live       the configured cloud provider; re-records eval/recordings/<provider>.json
+ *   ... -- crm              any mode: only scenarios whose id contains "crm"
  *
  * Each scenario gets a throwaway memory seeded with synthetic FIXTURE history
  * (known values, see fixtures.ts), so grading is exact where it can be.
  *
  * Two layers of checks:
- *  1. Behaviour, from the agent's event stream: recall dates resolved exactly,
- *     search used (or not), sources cited, turn completed, latency.
+ *  1. Behaviour, from the agent's event stream: memory looked up for exactly
+ *     the right dates, search used (or not), sources cited, turn completed, latency.
  *  2. Claims, from a judge model that turns the answer into per-claim records
  *     (ClaimEvaluation). The checks test whether the answer *proves* its
  *     verdicts rather than whether it sounds right:
@@ -20,21 +22,47 @@
  *     Today's real prices are not hard-coded (they change), so a check can't
  *     tell a wrong current value from a right one. It can tell an unsupported
  *     verdict from a supported one.
+ *
+ * Replay re-runs the app (date resolution, lookup, citation numbering, status,
+ * checks) against what the model did when recorded. It catches app
+ * regressions, not model drift; after a prompt change, re-record.
  */
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { Agent, type AgentEvent } from "../src/agent.ts";
 import { createProvider } from "../src/providers/index.ts";
+import { type Recording, RecordingProvider, ReplayProvider } from "../src/providers/replay.ts";
+import type { Provider } from "../src/providers/types.ts";
 import type { Source } from "../src/store.ts";
 import { Store } from "../src/store.ts";
 import { localDate } from "../src/time.ts";
 import { CRM, CRMS, daysAgo, type Fixture, INJECTION, lastWeekday, POSTGRES, seedFixture, STABLE } from "./fixtures.ts";
 
-const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
-const now = new Date();
-const client = createProvider();
+// ---- mode -----------------------------------------------------------------------
+
+const args = process.argv.slice(2);
+const live = args.includes("--live");
+const record = live && !args.includes("--no-record");
+const filter = args.find((a) => !a.startsWith("--"));
+const RECORDINGS = "eval/recordings";
+
+function loadRecording(): Recording {
+  const explicit = args[args.indexOf("--replay") + 1];
+  const file = args.includes("--replay") && explicit && !explicit.startsWith("--") ? explicit : join(RECORDINGS, "groq.json");
+  if (!existsSync(file)) {
+    console.error(`No recording at ${file}. Record one with: npm run eval:live (needs a provider key), or run npm run eval:local.`);
+    process.exit(1);
+  }
+  return JSON.parse(readFileSync(file, "utf8")) as Recording;
+}
+
+const base = live ? createProvider() : undefined;
+const recordingFile = base ? join(RECORDINGS, `${base.name}.json`) : "";
+const recorder = record && base ? new RecordingProvider(base, existsSync(recordingFile) ? (JSON.parse(readFileSync(recordingFile, "utf8")) as Recording) : undefined) : undefined;
+const replay = live ? undefined : new ReplayProvider(loadRecording());
+const client: Provider = recorder ?? base ?? replay!;
 const spoken = (d: Date) => new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long" }).format(d);
 
 // ---- per-claim judge ------------------------------------------------------------
@@ -81,6 +109,8 @@ type Check = [name: string, ok: (r: Run) => boolean];
 
 interface Scenario {
   id: string;
+  /** Skipped on providers without web search (local models). */
+  needsSearch?: boolean;
   history: Fixture[];
   ask: string;
   /** Run the claim judge on the answer. */
@@ -95,6 +125,8 @@ const norm = (v: string | null | undefined) => {
 };
 const claimsFor = (r: Run, entity: string) => (r.judgement?.claims ?? []).filter((c) => c.entity.toLowerCase().includes(entity.toLowerCase()));
 
+/** Scenarios and their date checks depend on the clock and timezone they run with (replays use the recorded ones). */
+function buildScenarios(now: Date, tz: string): Scenario[] {
 /** Recall was asked for exactly this local date ("on 3 November" → from = to = 2026-11-03). */
 const recalledExactly = (date: Date): Check => [
   `recall resolved exactly ${localDate(date, tz)}`,
@@ -146,9 +178,10 @@ const mentions = (names: string[], min = names.length): Check => [
 ];
 
 const d8 = daysAgo(8, now);
-const SCENARIOS: Scenario[] = [
+return [
   {
     id: "date-recall-and-recheck",
+    needsSearch: true,
     history: [{ at: d8, ...POSTGRES }],
     ask: `What did I ask you on ${spoken(d8)}? Is your answer still correct today?`,
     judge: true,
@@ -163,6 +196,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: "relative-weekday-pricing-diff",
+    needsSearch: true,
     history: [{ at: lastWeekday(2, now), ...POSTGRES }],
     ask: "Last Tuesday I asked you about Postgres hosting. Has any pricing changed since then?",
     judge: true,
@@ -170,6 +204,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: "crm-shortlist-per-product",
+    needsSearch: true,
     history: [{ at: lastWeekday(1, now, 15), ...CRM }],
     ask: "On Monday we shortlisted 5 CRM tools for a 20-person sales team. Has any of them changed pricing or shipped something big since?",
     judge: true,
@@ -184,6 +219,7 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: "no-change-is-reported-as-unchanged",
+    needsSearch: true,
     history: [{ at: daysAgo(4, now), ...STABLE }],
     ask: `On ${spoken(daysAgo(4, now))} I asked you about Python 2's end of life. Has anything changed since?`,
     judge: true,
@@ -237,40 +273,43 @@ const SCENARIOS: Scenario[] = [
   },
   {
     id: "current-fact-needs-search",
+    needsSearch: true,
     history: [],
     ask: "What's the latest stable release of Node.js and what's new in it?",
-    checks: [searched, cites, completed, ["answers under 30s", (r) => r.ms < 30_000]],
+    checks: [searched, cites, completed, ["answers under 30s (cloud only)", (r) => !client.webSearch || r.ms < 30_000]],
   },
   {
     id: "small-talk-is-fast",
     history: [],
     ask: "thanks, that was helpful!",
-    checks: [["no search", (r) => r.searches.length === 0], ["no recall", (r) => r.recalls.length === 0], ["under 8s", (r) => r.ms < 8_000], completed],
+    checks: [["no search", (r) => r.searches.length === 0], ["no recall", (r) => r.recalls.length === 0], ["under 8s (cloud only; local models are slower)", (r) => !client.webSearch || r.ms < 8_000], completed],
   },
 ];
+}
 
 // ---- runner ---------------------------------------------------------------------
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Free-tier keys have small per-minute token budgets: wait out a rate limit and retry once. */
-async function run(s: Scenario): Promise<Run> {
-  const r = await runOnce(s);
-  if (!/rate limit/i.test(r.error ?? "")) return r;
-  if (/used up/i.test(r.error ?? "")) {
-    // A long budget window is spent: every later scenario would fail too, so stop instead of recording noise.
-    console.log(`\n✖ ${r.error}\nStopping the eval: results now would only measure the rate limit. Re-run later.`);
-    process.exit(2);
+/** Live runs on free tiers hit token budgets: wait out what the provider asks (up to 30 min), up to 3 times. */
+async function run(s: Scenario, now: Date, tz: string): Promise<Run> {
+  for (let attempt = 0; ; attempt++) {
+    const r = await runOnce(s, now, tz);
+    if (!live || !/rate limit/i.test(r.error ?? "") || attempt >= 3) return r;
+    const m = r.error!.match(/~(\d+)\s*(min|s)/);
+    const waitMs = m ? Number(m[1]) * (m[2] === "min" ? 60_000 : 1000) + 15_000 : 65_000;
+    if (waitMs > 30 * 60_000) return r;
+    console.log(`  (rate limited; waiting ${Math.ceil(waitMs / 60_000)} min, then retrying)`);
+    await sleep(waitMs);
   }
-  console.log("  (rate limited; waiting 65s and retrying)");
-  await sleep(65_000);
-  return runOnce(s);
 }
 
-async function runOnce(s: Scenario): Promise<Run> {
+async function runOnce(s: Scenario, now: Date, tz: string): Promise<Run> {
   const store = new Store(join(mkdtempSync(join(tmpdir(), "eval-")), "m.json"));
   s.history.forEach((f) => seedFixture(store, f, tz));
-  const agent = new Agent(client, store);
+  const agent = new Agent(client, store, { extract: false });
+  recorder?.begin(s.id, now, tz);
+  replay?.begin(s.id);
   const r: Run = { text: "", status: "?", ms: 0, searches: [], recalls: [], cited: [] };
   await agent.runTurn({ message: s.ask, tz, now }, (e: AgentEvent) => {
     if (e.type === "final") r.text = e.text;
@@ -290,14 +329,40 @@ async function runOnce(s: Scenario): Promise<Run> {
   return r;
 }
 
-const filter = process.argv[2];
-const selected = SCENARIOS.filter((s) => !filter || s.id.includes(filter));
+function saveRecording(): void {
+  if (!recorder) return;
+  mkdirSync(RECORDINGS, { recursive: true });
+  writeFileSync(recordingFile, JSON.stringify(recorder.recording, null, 1));
+}
+
+const runNow = new Date();
+const runTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const ids = buildScenarios(runNow, runTz).map((s) => s.id).filter((id) => !filter || id.includes(filter));
+const mode = replay ? `replay of ${client.name.replace("replay:", "")} (${client.chatModel}) — no API calls` : `live: ${client.name} (${client.chatModel})${record ? `, recording to ${recordingFile}` : ""}`;
+console.log(`Mode: ${mode}`);
+
 const results = [];
 let passed = 0;
 let total = 0;
-for (const s of selected) {
+let skipped = 0;
+for (const id of ids) {
+  // Replays run each scenario with the clock and timezone it was recorded with.
+  const rec = replay ? (loadRecording().scenarios[id] as Recording["scenarios"][string] | undefined) : undefined;
+  const now = rec ? new Date(rec.now) : runNow;
+  const tz = rec?.tz ?? runTz;
+  const s = buildScenarios(now, tz).find((x) => x.id === id)!;
+  if (s.needsSearch && !client.webSearch) {
+    skipped++;
+    continue;
+  }
+  if (replay && !rec) {
+    console.log(`\n▶ ${id}: not in the recording (skipped)`);
+    skipped++;
+    continue;
+  }
   process.stdout.write(`\n▶ ${s.id}\n  Q: ${s.ask}\n`);
-  const r = await run(s);
+  const r = await run(s, now, tz);
+  saveRecording(); // keep progress even if a later scenario hits a quota wall
   const checks = s.checks.map(([name, ok]) => ({ name, ok: ok(r) }));
   for (const c of checks) {
     total++;
@@ -308,7 +373,8 @@ for (const s of selected) {
   console.log(`  ${(r.ms / 1000).toFixed(1)}s · ${r.searches.length} searches · ${r.recalls.length} recalls · ${r.cited.length} cited · ${r.status}`);
   results.push({ id: s.id, ask: s.ask, checks, ...r });
 }
-console.log(`\n${passed}/${total} checks passed across ${selected.length} scenarios`);
-const out = join("data", `eval-${now.toISOString().slice(0, 19).replace(/:/g, "")}.json`);
+console.log(`\n${passed}/${total} checks passed across ${results.length} scenarios${skipped ? ` (${skipped} skipped${client.webSearch ? "" : ": they need web search, which this provider lacks"})` : ""}`);
+mkdirSync("data", { recursive: true });
+const out = join("data", `eval-${runNow.toISOString().slice(0, 19).replace(/:/g, "")}.json`);
 writeFileSync(out, JSON.stringify(results, null, 2));
 console.log(`Full transcripts and per-claim judgements: ${out}`);

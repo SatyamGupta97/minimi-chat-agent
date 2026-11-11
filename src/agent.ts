@@ -67,6 +67,8 @@ export class Agent {
   constructor(
     private provider: Provider,
     private store: Store,
+    /** `extract: false` skips background fact extraction (evals don't grade it; saves tokens). */
+    private options: { extract?: boolean } = {},
   ) {}
 
   async runTurn(input: TurnInput, emit: (e: AgentEvent) => void): Promise<void> {
@@ -166,7 +168,7 @@ export class Agent {
     emit({ type: "done", turnId: assistantTurn.id, status, ms: Date.now() - started, searches: searches.length });
 
     // Off the latency path: distill facts for future "has it changed?" questions.
-    if (assistantTurn.extraction === "pending") void this.extract(assistantTurn.id, isNew);
+    if (assistantTurn.extraction === "pending" && this.options.extract !== false) void this.extract(assistantTurn.id, isNew);
   }
 
   /**

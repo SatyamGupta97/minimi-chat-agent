@@ -129,6 +129,7 @@ function strictify(schema: unknown): unknown {
 
 export class GroqProvider implements Provider {
   readonly name = "groq";
+  readonly webSearch = true;
   private client: Groq;
 
   constructor(

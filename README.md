@@ -21,13 +21,20 @@ Requires Node 20.12+. You need one key from either provider:
 | **Groq** (default when its key is set) | `GROQ_API_KEY` from https://console.groq.com/keys | `openai/gpt-oss-120b` + built-in `browser_search` | Works on a free key, but the free tier is tight: about 8K tokens/min plus a larger token budget over longer windows. A few heavy multi-product questions (or one `npm run eval`) can use it up for a while. A paid Groq plan removes the problem. |
 | **Google Gemini** | `GEMINI_API_KEY` from https://aistudio.google.com/apikey | `gemini-3.8-flash` + Google Search grounding | Search grounding needs billing enabled on the key's project. |
 
-Optional:
+## Testing: most of it needs no API key
+
+| Command | Needs | What it tests |
+|---|---|---|
+| `npm test` | nothing | Offline unit tests: date phrases and false positives, timezones/DST, memory lookup gating, recall, Q/A linking, migration, corrupt files, extraction recovery, citation parsing and placement |
+| `npm run eval` | nothing | Replays the committed recording (`eval/recordings/groq.json`) through the real app: date resolution, memory lookup, citation numbering, turn status and every eval check run for real; only the model's output is canned. Catches app regressions, not model drift |
+| `npm run eval:local` | [Ollama](https://ollama.com) + `ollama pull qwen3:4b` | The memory scenarios against a local model (no web search locally, so search scenarios are skipped). Integration testing; a 4B model is a weak judge, so treat claim-level checks as noisy |
+| `npm run eval:live` | a provider key | The full suite against the real model, re-recording `eval/recordings/<provider>.json`. Waits out free-tier rate limits. Run it before submitting or after prompt changes |
+
+Other scripts:
 
 ```bash
 npm run seed              # add labelled synthetic history (last Monday/Tuesday) to try the memory questions; no API calls
 npm run ask -- "question" # terminal client sharing the same memory
-npm test                  # offline tests: dates/DST, recall, Q/A linking, extraction recovery
-npm run eval              # end-to-end scenarios against the live model (fixture history, graded checks)
 ```
 
 Memory lives in `data/memory.json`. Delete it to start fresh.
