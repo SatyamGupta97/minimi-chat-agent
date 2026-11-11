@@ -200,10 +200,12 @@ async function send(text) {
             paint();
             break;
           case "error": {
+            // Show the reason where the answer would be, so a failed turn never looks like "no response".
             const p = document.createElement("div");
             p.className = "error";
-            p.textContent = e.message;
-            view.root.append(p);
+            p.textContent = `⚠ ${e.message}`;
+            view.answer.before(p);
+            view.status.querySelectorAll(".chip.live").forEach((c) => c.classList.remove("live"));
             break;
           }
           case "done":
