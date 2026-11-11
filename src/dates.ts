@@ -65,7 +65,10 @@ export function resolveDates(message: string, now: Date, tz: string): DateRef[] 
   // Relative days.
   if (/\b(day before yesterday)\b/.test(text)) add("the day before yesterday", addDays(today, -2));
   else if (/\byesterday\b/.test(text)) add("yesterday", addDays(today, -1));
-  if (/\b(today|this morning|this afternoon|earlier today|tonight)\b/.test(text)) add("today", today);
+  if (/\b(this morning|this afternoon|earlier today|tonight)\b/.test(text)) add("today", today);
+  // A bare "today" ("is it still correct today?") usually means now, not a past
+  // chat. It only counts when it's the sole date in the message (checked at the end).
+  const bareToday = /\btoday\b/.test(text);
   for (const r of text.matchAll(/\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|a couple of|a few)\s+days?\s+ago\b/g)) {
     if (r[1] === "a couple of") add(r[0], addDays(today, -3), addDays(today, -2));
     else if (r[1] === "a few") add(r[0], addDays(today, -5), addDays(today, -2));
@@ -117,6 +120,7 @@ export function resolveDates(message: string, now: Date, tz: string): DateRef[] 
     const d = calendarDate(Number(r[3]), Number(r[2]) - 1, Number(r[1]), today);
     if (d) add(r[0], d);
   }
+  if (bareToday && refs.length === 0) add("today", today);
   return refs;
 }
 

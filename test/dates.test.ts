@@ -16,6 +16,9 @@ test("relative days", () => {
   assert.deepEqual(ranges("what did I ask yesterday?"), ["2026-11-10"]);
   assert.deepEqual(ranges("the day before yesterday"), ["2026-11-09"]);
   assert.deepEqual(ranges("earlier today you said"), ["2026-11-11"]);
+  assert.deepEqual(ranges("what did I ask you today?"), ["2026-11-11"]);
+  // "today" meaning "now" next to a real date is not a second lookup.
+  assert.deepEqual(ranges("What did I ask on 3 November? Is it still correct today?"), ["2026-11-03"]);
   assert.deepEqual(ranges("3 days ago"), ["2026-11-08"]);
   assert.deepEqual(ranges("a few days ago"), ["2026-11-06..2026-11-09"]);
 });

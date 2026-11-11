@@ -42,9 +42,13 @@ import { CRM, CRMS, daysAgo, type Fixture, INJECTION, lastWeekday, POSTGRES, see
 
 // ---- mode -----------------------------------------------------------------------
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 const args = process.argv.slice(2);
 const live = args.includes("--live");
 const record = live && !args.includes("--no-record");
+/** Recording resumes by default (skips scenarios already recorded); --fresh re-records everything, e.g. after a prompt change. */
+const fresh = args.includes("--fresh");
 const filter = args.find((a) => !a.startsWith("--"));
 const RECORDINGS = "eval/recordings";
 
@@ -60,7 +64,9 @@ function loadRecording(): Recording {
 
 const base = live ? createProvider() : undefined;
 const recordingFile = base ? join(RECORDINGS, `${base.name}.json`) : "";
-const recorder = record && base ? new RecordingProvider(base, existsSync(recordingFile) ? (JSON.parse(readFileSync(recordingFile, "utf8")) as Recording) : undefined) : undefined;
+const previous = record && !fresh && existsSync(recordingFile) ? (JSON.parse(readFileSync(recordingFile, "utf8")) as Recording) : undefined;
+const alreadyRecorded = new Set(Object.keys(previous?.scenarios ?? {}));
+const recorder = record && base ? new RecordingProvider(base, previous) : undefined;
 const replay = live ? undefined : new ReplayProvider(loadRecording());
 const client: Provider = recorder ?? base ?? replay!;
 const spoken = (d: Date) => new Intl.DateTimeFormat("en-GB", { day: "numeric", month: "long" }).format(d);
@@ -85,11 +91,39 @@ const Judgement = z.object({
 });
 type Judgement = z.infer<typeof Judgement>;
 
+/**
+ * Grade with the small model first: on Groq it has its own daily token budget,
+ * so grading doesn't eat the budget of the model being evaluated. Fall back to
+ * the chat model if it can't produce valid JSON. In live mode, wait out rate
+ * limits instead of losing the grade.
+ */
 async function judge(question: string, answer: string, cited: Source[]): Promise<Judgement> {
+  const attempts: { strong: boolean }[] = [{ strong: false }, { strong: false }, { strong: true }];
+  for (let i = 0; ; i++) {
+    const opts = attempts[Math.min(i, attempts.length - 1)];
+    try {
+      return await judgeOnce(question, answer, cited, opts.strong);
+    } catch (e) {
+      const msg = (e as Error).message;
+      const wait = msg.match(/try again in (?:(\d+)m)?([\d.]+)s/i);
+      if (live && wait && i < 6) {
+        const ms = (Number(wait[1] ?? 0) * 60 + Number(wait[2])) * 1000 + 5_000;
+        if (ms <= 30 * 60_000) {
+          console.log(`  (judge rate limited; waiting ${Math.ceil(ms / 60_000)} min)`);
+          await sleep(ms);
+          continue;
+        }
+      }
+      if (i >= attempts.length - 1 || replay) throw e;
+    }
+  }
+}
+
+async function judgeOnce(question: string, answer: string, cited: Source[], strong: boolean): Promise<Judgement> {
   return client.json(
     `You grade a research assistant's answer. Extract one record per (entity, attribute) the answer re-checks against a past conversation, using ONLY what the answer itself says. Do not use your own knowledge.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${cited.map((s, i) => `[${i + 1}] ${s.url}`).join("\n") || "(none)"}\n</sources>`,
     Judgement,
-    { strong: true },
+    { strong },
   );
 }
 
@@ -289,7 +323,6 @@ return [
 
 // ---- runner ---------------------------------------------------------------------
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Live runs on free tiers hit token budgets: wait out what the provider asks (up to 30 min), up to 3 times. */
 async function run(s: Scenario, now: Date, tz: string): Promise<Run> {
@@ -355,6 +388,11 @@ for (const id of ids) {
     skipped++;
     continue;
   }
+  if (recorder && alreadyRecorded.has(id)) {
+    console.log(`\n▶ ${id}: already recorded (use --fresh to re-record)`);
+    skipped++;
+    continue;
+  }
   if (replay && !rec) {
     console.log(`\n▶ ${id}: not in the recording (skipped)`);
     skipped++;
@@ -362,6 +400,13 @@ for (const id of ids) {
   }
   process.stdout.write(`\n▶ ${s.id}\n  Q: ${s.ask}\n`);
   const r = await run(s, now, tz);
+  if (live && /rate limit/i.test(r.error ?? "")) {
+    // Never record a quota failure as the model's behaviour: stop, keep what's recorded, resume later.
+    if (recorder) delete recorder.recording.scenarios[s.id];
+    saveRecording();
+    console.log(`\n✖ ${r.error}\nStopped. Scenarios recorded so far are saved; run the same command later to resume.`);
+    process.exit(2);
+  }
   saveRecording(); // keep progress even if a later scenario hits a quota wall
   const checks = s.checks.map(([name, ok]) => ({ name, ok: ok(r) }));
   for (const c of checks) {
