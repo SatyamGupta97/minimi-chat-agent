@@ -77,7 +77,8 @@ export function resolveDates(message: string, now: Date, tz: string): DateRef[] 
   }
 
   // Weeks and months.
-  if (/\blast week\b/.test(text)) add("last week", addDays(mondayOf(today), -7), addDays(mondayOf(today), -1));
+  if (/\b(the )?week before last\b/.test(text)) add("the week before last", addDays(mondayOf(today), -14), addDays(mondayOf(today), -8));
+  else if (/\b(last|previous) week\b/.test(text)) add("last week", addDays(mondayOf(today), -7), addDays(mondayOf(today), -1));
   if (/\b(this week|earlier this week)\b/.test(text)) add("this week", mondayOf(today), today);
   if (/\blast month\b/.test(text)) {
     const t = parse(today);
@@ -87,15 +88,18 @@ export function resolveDates(message: string, now: Date, tz: string): DateRef[] 
   }
 
   // Weekdays: "Monday", "on Monday", "last Tuesday", "this past Friday".
-  const wd = /\b(last|this past|past|on|this)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/g;
+  // A weekday followed by ".com"/".io" etc. is a product name (Monday.com), and
+  // "next/coming/upcoming Monday" is the future: neither is a past date.
+  const wd = /\b(next|coming|upcoming|this coming|last|previous|this past|past|on|this)?\s*(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b(?!\.[a-z])/g;
   while ((m = wd.exec(text))) {
+    if (m[1] && /next|coming|upcoming/.test(m[1])) continue;
     const target = WEEKDAYS.indexOf(m[2]);
     let recent = addDays(today, -1);
     while (weekday(recent) !== target) recent = addDays(recent, -1); // most recent, strictly before today
     const phrase = m[0].trim();
     add(phrase, recent);
     // "last Tuesday" said on a Wednesday can mean yesterday or the week before: offer both.
-    if (m[1] === "last" && recent >= mondayOf(today)) add(phrase, addDays(recent, -7));
+    if ((m[1] === "last" || m[1] === "previous") && recent >= mondayOf(today)) add(phrase, addDays(recent, -7));
   }
 
   // Explicit dates: "3 November", "3rd of Nov 2026", "November 3", "Nov 3rd, 2026", "2026-11-03".
@@ -118,7 +122,16 @@ export function resolveDates(message: string, now: Date, tz: string): DateRef[] 
 
 /** Does the message refer to an earlier conversation, even without a date? */
 export function refersToPast(message: string): boolean {
-  return /\b(i|we)\s+(asked|discussed|talked|shortlisted|chose|picked|decided|compared|looked at|mentioned|said)\b|\byou\s+(said|told|recommended|suggested|answered|mentioned|gave|listed)\b|\b(last time|previously|you said earlier|since then|our (chat|conversation|discussion)|remember|we were)\b/i.test(
-    message,
-  );
+  const t = message.toLowerCase().replace(/[’']/g, "'");
+  return [
+    // "I asked", "we shortlisted", "did I ask", "what did we discuss", "have we talked about"
+    /\b(i|we)\s+(asked|discussed|talked|shortlisted|chose|picked|decided|compared|looked at|mentioned|said|told you|researched|searched)\b/,
+    /\b(did|have|had)\s+(i|we)\s+(ask|discuss|talk|shortlist|choose|pick|decide|compare|look|mention|say|tell)\b/,
+    // "you said", "did you say", "your answer", "you told me"
+    /\byou\s+(said|told|recommended|suggested|answered|mentioned|gave|listed|found|claimed)\b/,
+    /\bdid you\s+(say|tell|recommend|suggest|answer|mention|find)\b/,
+    /\byour (answer|reply|recommendation|response)\b/,
+    // "last time", "our chat", "remember when", "since then", "previously"
+    /\b(last time|previously|since then|remember|we were|our (chat|conversation|discussion)|that (chat|conversation|discussion))\b/,
+  ].some((re) => re.test(t));
 }

@@ -1,47 +1,45 @@
 # Design
 
-**A research agent whose only tool is web search, backed by deterministic temporal memory that the app looks up, facts extracted asynchronously, and per-claim comparison against the past. It runs on Groq (`gpt-oss-120b` + browser search) or Gemini (Google Search grounding) behind one small adapter.**
+**A research agent whose only tool is web search, with temporal memory that the app looks up deterministically, facts extracted asynchronously, and per-claim comparison against the past. It runs on Groq (`gpt-oss-120b` + browser search) or Gemini (Google Search grounding) behind one small adapter.**
 
 ## How it works
 
 ```
 POST /api/chat (SSE) → Agent.runTurn
-  1. save the question (it is memory even if the answer fails)
-  2. memory lookup in code: date phrases → exact local date ranges (every reading if ambiguous);
-     past references without a date → topic search
-  3. stream the model: earlier turns stamped "[sent <time>]" + a <context> block (clock, calendar,
-     past-chat index, lookup results) + the message; its one tool is built-in web search
-  4. stream text, "Checking memory…", "Searching…"; the adapter maps vendor citations to stable [n]
-  5. save the answer: status, replyTo, cited sources (evidence) apart from pages only read
-  6. background: a small model extracts {title, entities, user decisions, facts}; retried after restarts
+  1. save the question (memory even if the answer fails)
+  2. if the message refers to our past: resolve date phrases to local date ranges
+     (every reading if ambiguous) and look up those days, or the topic if there is no date
+  3. one streamed model call: earlier turns + context (clock, calendar, past-chat index,
+     recalled exchanges fenced as untrusted data) + message; its only tool is web search
+  4. the adapter maps vendor citations to stable [n]; save the answer with status,
+     replyTo, cited sources apart from pages only read
+  5. background: extract {title, entities, user decisions, facts}; retried after restarts
 ```
 
 ## Why
 
 **The hard part of the test set is memory plus time, not search.** "What did I ask on 3 November? Is it still right?" means resolving a date in the user's timezone, finding what was said, and re-checking each claim.
 
-- **Memory is the app's job, not a second tool.** The brief allows one tool, so the orchestrator resolves date phrases in code and retrieves before the model runs. The resolver is unit-tested and timezone- and DST-correct; "last Tuesday" said on a Wednesday yields both readings. Retrieval is a hard date filter plus BM25-style ranking over questions, entities, user decisions and facts. This also saves a model round trip per memory question. An empty lookup still reports what memory holds ("nothing on 3 Nov; my first chat with you is 9 Nov"), so nothing gets invented. Trade-off: unknown phrasings ("the week before last") fall back to the past-chat index shown every turn.
-- **Prove change, don't narrate it.** Facts are extracted when a turn is saved, so "has pricing changed?" becomes a per-claim diff: the stored value against a value cited today. No change is reported without both sides. A missing baseline is reported as unknown. A page's publish date is not the date a change took effect.
-- **Only finished, cited answers are evidence.** Turns are `completed | incomplete | failed | cancelled`. Only an explicit vendor "stop" counts as completed, and only completed answers become baselines. Answers link to their question by `replyTo`, never by position; v1 data is migrated and marks reconstructed pairings `inferred`. An extracted fact keeps a URL only if the answer cited it.
-- **Fast.** The first token comes from the one call that does the work. Search runs on the vendor's servers and memory arrives with the request, so neither adds a round trip. Searched answers on Groq take 8–25 s, with the first token in under a second. Per-turn context sits only in the newest message, so the prefix stays cacheable.
-- **Vendor-neutral core.** Vendor SDKs are imported only in `src/providers/`. The interface is one streamed answer, one JSON call and error text. Adapters map their citation formats onto the same `[n]` + `Source` records (Groq `【cursor†Lx-Ly】` → the exact search result behind those lines), so stored memory doesn't depend on the vendor. Groq is the default because it works on a free key.
+- **Memory is the app's job, not a second tool.** The brief allows one tool. Code resolves "last Tuesday" (both readings when ambiguous), "3 November" or "the week before last" in the user's timezone, then retrieves with a hard date filter plus BM25 ranking over questions, entities, decisions and facts. Lookups run only when the message refers to our past, so "weather on Monday" and "Monday.com" don't trigger one. This saves a model round trip, and an empty lookup still reports what memory holds, so nothing is invented.
+- **Recalled memory is untrusted.** Past messages are user-written, and past answers were shaped by web pages. They are fenced (with `<` escaped), and the prompt treats them as data to report, never instructions to follow.
+- **Prove change, don't narrate it.** "Has pricing changed?" becomes a per-claim diff: the stored value against a value cited today. No change is claimed without both sides; a missing baseline is "unknown". An extracted fact keeps a source only if that source's `[n]` sits next to the fact.
+- **Only finished answers are evidence.** Turns are `completed | incomplete | failed | cancelled`. Only an explicit vendor "stop" counts as completed, and only completed answers become baselines. Answers link to questions by `replyTo`, not position.
+- **Fast.** One model call, with search on the vendor's side and memory in the request. On Groq the first token arrives in under a second, and searched answers take 8–25 s. Extraction runs after the reply.
+- **Vendor-neutral.** SDKs are imported only in `src/providers/` (one streamed answer, one JSON call, error text). Adapters map citation formats onto the same records, e.g. Groq `【cursor†Lx-Ly】` → the exact search result behind those lines.
 
 ## Considered and rejected
 
-- **Memory as a model-callable tool** (my first version): flexible about phrasing, but a second tool against the brief and an extra round trip.
-- **An intent → plan → search → evaluate pipeline:** 3–5 serial LLM calls before the first token. One call already plans, searches in parallel and re-searches when evidence is thin.
-- **Postgres + pgvector, React:** they would break "`npm install && npm run dev`, one key" for one user's few thousand turns, and embeddings don't help with the hard constraint (dates). Storage is an atomic JSON file and assumes a single process; a corrupt file stops startup instead of being reset.
-- **Backdated live answers as demo data:** they would file today's prices under last week's date. `npm run seed` writes labelled synthetic fixtures instead, idempotently.
+- **Memory as a model-callable tool** (my first version): flexible, but a second tool and an extra round trip.
+- **Intent → plan → search → evaluate pipelines:** 3–5 serial calls before the first token.
+- **Postgres + pgvector, React:** they'd break "`npm install && npm run dev`" for one user, and embeddings don't solve the hard constraint, dates. Storage is an atomic JSON file (single process); a corrupt file stops startup instead of being reset.
+- **Backdated live answers as demo data:** that would file today's prices under last week's date. `npm run seed` writes labelled synthetic fixtures instead, idempotently.
 
 ## Evaluation
 
-`npm test` runs offline and covers the deterministic parts: date phrases, timezones and DST, the memory lookup, recall, `replyTo` under interleaving, migration, corrupt files, extraction recovery, and both citation formats.
+`npm test` (offline): date phrases and false positives, timezones and DST, lookup gating, recall, `replyTo`, migration, corrupt files, extraction recovery, claim–citation adjacency, both citation formats.
 
-`npm run eval` runs the test-set patterns live, each scenario on fixture history. A judge model turns each answer into per-claim records (`entity, historicalValue, currentValue, verdict, evidenceUrls`). The checks pass only when the verdicts are proven: the old value matches memory, "changed" has two values plus evidence, an unknown baseline is stated explicitly, a stable fact is explicitly confirmed. Explicit dates must resolve exactly, and false premises must be corrected.
+`npm run eval` (live): each scenario runs on fixture history. A judge turns each answer into per-claim records (`entity, historicalValue, currentValue, verdict, evidenceUrls`). The checks require proof: the old value matches memory, "changed" has two values plus evidence, an unknown baseline is explicit. Further scenarios cover exact date resolution, false premises, and recalled prompt injection.
 
 ## With another week
 
-1. More eval cases (conflicting sources, announcement vs. release date); tune effort and the prompt on the scores.
-2. A fact store with last-verified dates, re-checked in the background.
-3. Check each claim against the text of its cited page.
-4. Embeddings alongside BM25 for paraphrased topic references; SQLite FTS5; multi-user accounts.
+Conflicting-source and release-date evals, with prompt and effort tuned on the scores; re-verifying stored facts in the background; checking claims against cited page text; embeddings alongside BM25 for paraphrases.

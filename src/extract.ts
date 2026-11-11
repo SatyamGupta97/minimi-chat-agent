@@ -43,8 +43,11 @@ export async function extractFacts(
     `Extract a short title, the entities discussed, the user's decisions/context, and the verifiable, time-sensitive facts from this exchange. Only include claims the answer actually makes. Citation markers like [2] refer to the numbered sources.\n\n<question>\n${question}\n</question>\n\n<answer>\n${answer}\n</answer>\n\n<sources>\n${sourceList || "(none)"}\n</sources>`,
     Extraction,
   );
-  // Only a number that points at a source the answer actually cited becomes a URL; anything else is null.
-  const urlFor = (n: number | null) => (n !== null && n >= 1 && n <= sources.length ? sources[n - 1].url : null);
+  // A fact keeps a source URL only if that source's [n] marker sits in the same
+  // sentence/row as the fact's value. A source cited elsewhere in the answer
+  // proves nothing about this fact; such facts stay unverified (null).
+  const urlFor = (n: number | null, value: string) =>
+    n !== null && n >= 1 && n <= sources.length && citedNextTo(answer, value, n) ? sources[n - 1].url : null;
   return {
     title: out.title.trim().slice(0, 80),
     entities: out.entities.slice(0, 30),
@@ -54,7 +57,25 @@ export async function extractFacts(
       attribute: f.attribute,
       value: f.value,
       asOf: f.as_of,
-      sourceUrl: urlFor(f.source_number),
+      sourceUrl: urlFor(f.source_number, f.value),
     })),
   };
+}
+
+/** Sentences and table rows. A citation marker right after a sentence end stays with that sentence. */
+function segments(text: string): string[] {
+  return text.split(/\n+|(?<=[.!?])\s+(?!\[\d)/).filter((x) => x.trim());
+}
+
+/**
+ * Does marker [n] appear in a segment that states `value`? Values with numbers
+ * match on all their numbers ("$19/month" ~ "$19 /mo"); others on the text.
+ */
+export function citedNextTo(answer: string, value: string, n: number): boolean {
+  const nums = value.replace(/,/g, "").match(/\d+(?:\.\d+)?/g);
+  const states = (seg: string) => {
+    const flat = seg.replace(/,/g, "").replace(/\[\d+\]/g, "");
+    return nums ? nums.every((x) => new RegExp(`(^|[^\\d.])${x.replace(".", "\\.")}(?![\\d])`).test(flat)) : seg.toLowerCase().includes(value.toLowerCase());
+  };
+  return segments(answer).some((seg) => states(seg) && seg.includes(`[${n}]`));
 }

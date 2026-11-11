@@ -147,3 +147,13 @@ test("a repeated sentence keeps its citation on the later occurrence", async () 
   };
   assert.equal(placeCitations(text, meta, citations), "Neon costs $19. Supabase costs $25.[1] Neon costs $19.[2]");
 });
+
+test("a fact keeps a source only if that source is cited next to the fact", async () => {
+  const { citedNextTo } = await import("../src/extract.ts");
+  const answer = "Neon costs $19/month [1]. Supabase costs $25/month.[2]\n| Render | $7 | [3] |";
+  assert.equal(citedNextTo(answer, "$19/mo", 1), true);
+  assert.equal(citedNextTo(answer, "$19/mo", 2), false); // [2] is cited, but for Supabase
+  assert.equal(citedNextTo(answer, "$25", 2), true);
+  assert.equal(citedNextTo(answer, "$7", 3), true); // table row
+  assert.equal(citedNextTo(answer, "$1", 1), false); // "$19" doesn't state "$1"
+});

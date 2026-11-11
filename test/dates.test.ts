@@ -86,3 +86,31 @@ test("lookup: ordinary questions trigger no lookup", () => {
   const s = storeWith("2026-11-09T06:00:00Z", "Postgres hosting prices?", "Neon.");
   assert.deepEqual(lookupMemory(s, "What's new in Node 26?", now, tz, opts), { queries: [], text: "" });
 });
+
+test("memory lookup only when the message refers to our past (regression table)", () => {
+  const s = storeWith("2026-11-09T06:00:00Z", "Shortlist 5 CRMs", "HubSpot, Pipedrive, Salesforce, Zoho, Attio.");
+  const kind = (msg: string) => {
+    const q = lookupMemory(s, msg, now, tz, opts).queries;
+    return q.length === 0 ? "none" : q[0].from ? `date×${q.length}` : "topic";
+  };
+  assert.equal(kind("On Monday we shortlisted five CRMs"), "date×1");
+  assert.equal(kind("What did I ask on 3 November?"), "date×1");
+  assert.equal(kind("Last Tuesday I asked about Postgres"), "date×2");
+  assert.equal(kind("You said Neon was cheaper"), "topic");
+  assert.equal(kind("What's the weather on Monday?"), "none");
+  assert.equal(kind("Is Monday.com good for CRM?"), "none");
+  assert.equal(kind("What's happening next Tuesday?"), "none");
+  assert.equal(kind("Compare Monday.com and HubSpot"), "none");
+});
+
+test("weekday false positives: product names and future weekdays are not dates", () => {
+  assert.deepEqual(ranges("we picked monday.com last week"), ["2026-11-02..2026-11-08"]);
+  assert.deepEqual(ranges("next Tuesday"), []);
+  assert.deepEqual(ranges("this coming Friday"), []);
+  assert.deepEqual(ranges("on Monday."), ["2026-11-09"]); // sentence end is still a date
+});
+
+test("the week before last, and 'previous' like 'last'", () => {
+  assert.deepEqual(ranges("the week before last"), ["2026-10-26..2026-11-01"]);
+  assert.deepEqual(ranges("the previous Tuesday"), ["2026-11-10", "2026-11-03"]);
+});
