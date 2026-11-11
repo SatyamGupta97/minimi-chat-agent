@@ -19,7 +19,7 @@ Requires Node 20.12+. One key is needed: a Google Gemini API key from https://ai
 Optional:
 
 ```bash
-npm run seed              # create backdated history (real answers filed under last Monday/Tuesday) to try the memory questions
+npm run seed              # add labelled synthetic history (last Monday/Tuesday) to try the memory questions; no API calls
 npm run ask -- "question" # terminal client sharing the same memory
 npm test                  # offline tests: dates/DST, recall, Q/A linking, extraction recovery
 npm run eval              # end-to-end scenarios against the live model (fixture history, graded checks)

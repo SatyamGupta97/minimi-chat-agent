@@ -36,6 +36,8 @@ export interface RecallHit {
   i_answered: string;
   /** Present only when the answer did not complete; such answers are not a reliable baseline. */
   answer_status?: string;
+  /** Present when the question/answer pairing was reconstructed from old data, not recorded. */
+  pairing?: "inferred";
   about?: string[];
   user_decisions?: string[];
   facts_stated?: Fact[];
@@ -170,6 +172,7 @@ export function recall(
     you_asked: e.question.text,
     i_answered: truncate(e.answer?.text || "(no answer was recorded)", 2500),
     answer_status: e.answer?.status && e.answer.status !== "completed" ? e.answer.status : undefined,
+    pairing: e.answer?.replyToInferred ? "inferred" : undefined,
     about: e.answer?.entities?.length ? e.answer.entities : undefined,
     user_decisions: e.answer?.decisions?.length ? e.answer.decisions : undefined,
     facts_stated: e.answer?.facts?.length ? e.answer.facts : undefined,

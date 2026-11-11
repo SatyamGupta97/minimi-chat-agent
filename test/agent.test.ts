@@ -81,7 +81,7 @@ test("pending extractions are recovered on startup", async () => {
     })),
     s,
   );
-  assert.equal(await agent.recoverPendingExtractions(), 1);
+  assert.deepEqual(await agent.recoverPendingExtractions(), { attempted: 1, succeeded: 1 });
   const t = s.allTurns().find((x) => x.id === a.id)!;
   assert.equal(t.extraction, "done");
   assert.equal(t.facts?.[0].value, "$19/mo");
@@ -100,7 +100,7 @@ test("extraction retries, then gives up after 3 attempts", async () => {
     await agent.recoverPendingExtractions();
     await agent.recoverPendingExtractions();
     assert.equal(s.allTurns().find((x) => x.id === a.id)!.extraction, "failed");
-    assert.equal(await agent.recoverPendingExtractions(), 0);
+    assert.deepEqual(await agent.recoverPendingExtractions(), { attempted: 0, succeeded: 0 });
   } finally {
     console.warn = warn;
   }

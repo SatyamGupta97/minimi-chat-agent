@@ -6,7 +6,13 @@ import { config, createClient } from "./config.ts";
 import { Store } from "./store.ts";
 import { isValidTimeZone } from "./time.ts";
 
-const store = new Store(config.dataFile);
+let store: Store;
+try {
+  store = new Store(config.dataFile);
+} catch (e) {
+  console.error(`\n  ✖ ${(e as Error).message}\n`);
+  process.exit(1);
+}
 const agent = new Agent(createClient(), store);
 
 const STATIC: Record<string, string> = {
@@ -129,6 +135,6 @@ server.listen(config.port, () => {
   // Finish any fact extraction a previous run was interrupted in the middle of.
   agent
     .recoverPendingExtractions()
-    .then((n) => n && console.log(`  recovered ${n} pending fact extraction(s)`))
+    .then(({ attempted, succeeded }) => attempted && console.log(`  fact extraction recovery: ${succeeded}/${attempted} succeeded`))
     .catch((e) => console.warn("  extraction recovery failed:", errorMessage(e)));
 });

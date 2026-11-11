@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 /**
@@ -50,6 +50,8 @@ export interface Turn {
   text: string;
   /** Assistant turns: the user turn this answers (explicit, never inferred from order). */
   replyTo?: string;
+  /** True when replyTo was inferred from order during the v1 -> v2 migration rather than recorded. */
+  replyToInferred?: boolean;
   /** Assistant turns only. */
   status?: TurnStatus;
   /** ISO-8601 instant. */
@@ -80,10 +82,41 @@ export interface Conversation {
   updatedAt: string;
 }
 
+const VERSION = 2;
+
 interface DB {
-  version: 1;
+  version: typeof VERSION;
   conversations: Conversation[];
   turns: Turn[];
+}
+
+/** The memory file exists but can't be read as memory. Never overwritten automatically. */
+export class CorruptMemoryError extends Error {}
+
+/**
+ * v1 (first release) had no replyTo or status on assistant turns. Link each
+ * answer to the user turn just before it in the same conversation, but only
+ * when that pairing is unambiguous (exactly one unanswered question waiting),
+ * and mark it as inferred. Status is derived from the old error marker.
+ */
+export function migrateV1(db: { conversations: Conversation[]; turns: Turn[] }): DB {
+  const waiting = new Map<string, Turn[]>(); // conversationId -> unanswered user turns
+  for (const t of db.turns) {
+    if (t.role === "user") {
+      waiting.set(t.conversationId, [...(waiting.get(t.conversationId) ?? []), t]);
+      continue;
+    }
+    const open = waiting.get(t.conversationId) ?? [];
+    if (!t.replyTo && open.length === 1) {
+      t.replyTo = open[0].id;
+      t.replyToInferred = true;
+    }
+    waiting.set(t.conversationId, []);
+    if (!t.status) t.status = !t.text.trim() || t.text.startsWith("_(error") ? "failed" : "completed";
+    // v1 extraction had no persisted state; mark done if it produced anything, else leave unextracted.
+    if (!t.extraction && (t.facts || t.entities)) t.extraction = "done";
+  }
+  return { version: VERSION, conversations: db.conversations, turns: db.turns };
 }
 
 export class Store {
@@ -93,21 +126,41 @@ export class Store {
     this.db = Store.load(file);
   }
 
+  /**
+   * A missing file means "no memory yet". Anything else that fails to load
+   * (bad JSON, unknown version) stops startup with the file untouched: silently
+   * starting empty would overwrite the user's history on the next write.
+   */
   private static load(file: string): DB {
+    if (!existsSync(file)) return { version: VERSION, conversations: [], turns: [] };
+    let raw: { version?: number; conversations?: Conversation[]; turns?: Turn[] };
     try {
-      const db = JSON.parse(readFileSync(file, "utf8")) as DB;
-      if (db.version === 1) return db;
-    } catch {
-      /* missing or unreadable: start fresh */
+      raw = JSON.parse(readFileSync(file, "utf8"));
+    } catch (e) {
+      throw new CorruptMemoryError(`Memory file ${file} is not valid JSON (${(e as Error).message}). It was left untouched; fix or move it, then restart.`);
     }
-    return { version: 1, conversations: [], turns: [] };
+    if (!Array.isArray(raw?.conversations) || !Array.isArray(raw?.turns)) {
+      throw new CorruptMemoryError(`Memory file ${file} doesn't look like a memory file. It was left untouched.`);
+    }
+    if (raw.version === VERSION) return raw as DB;
+    if (raw.version === 1) {
+      copyFileSync(file, `${file}.v1.bak`); // keep the original before rewriting
+      const db = migrateV1({ conversations: raw.conversations, turns: raw.turns });
+      Store.write(file, db);
+      return db;
+    }
+    throw new CorruptMemoryError(`Memory file ${file} has unknown version ${raw.version}. It was left untouched.`);
+  }
+
+  private static write(file: string, db: DB): void {
+    mkdirSync(dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(db));
+    renameSync(tmp, file);
   }
 
   private save(): void {
-    mkdirSync(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(this.db));
-    renameSync(tmp, this.file);
+    Store.write(this.file, this.db);
   }
 
   listConversations(): Conversation[] {

@@ -51,7 +51,7 @@ const RecallInput = z.object({
 const RECALL_TOOL: FunctionDeclaration = {
   name: "recall_memory",
   description:
-    "Search the user's past conversations with you. Returns matching exchanges (when, what they asked, what you answered, what it was about, what the user decided, the facts you stated, the sources you cited) plus an overview of what memory exists. Give a date range (inclusive, user's local dates) when the user refers to a time, a topic query when they refer to a subject, or both. Results already in the current conversation are flagged. Answers with answer_status other than 'completed' were cut off and are not a reliable baseline.",
+    "Search the user's past conversations with you. Returns matching exchanges (when, what they asked, what you answered, what it was about, what the user decided, the facts you stated, the sources you cited) plus an overview of what memory exists. Give a date range (inclusive, user's local dates) when the user refers to a time, a topic query when they refer to a subject, or both. Results already in the current conversation are flagged. Answers with answer_status other than 'completed' were cut off and are not a reliable baseline. pairing 'inferred' means the question/answer link was reconstructed from old data.",
   parametersJsonSchema: {
     type: "object",
     properties: {
@@ -350,10 +350,11 @@ export class Agent {
   }
 
   /** Resume extraction work interrupted by a restart. Sequential: it's background work. */
-  async recoverPendingExtractions(): Promise<number> {
+  async recoverPendingExtractions(): Promise<{ attempted: number; succeeded: number }> {
     const pending = this.store.allTurns().filter((t) => t.extraction === "pending").map((t) => t.id);
     for (const id of pending) await this.extract(id);
-    return pending.length;
+    const succeeded = pending.filter((id) => this.store.allTurns().find((t) => t.id === id)?.extraction === "done").length;
+    return { attempted: pending.length, succeeded };
   }
 }
 
