@@ -27,6 +27,7 @@ const STATIC: Record<string, string> = {
 const TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8", // browsers refuse ES modules served with any non-JS type
   ".css": "text/css; charset=utf-8",
 };
 
@@ -112,6 +113,11 @@ const server = createServer(async (req, res) => {
         store.deleteConversation(conv.id);
         return json(res, 200, { ok: true });
       }
+    }
+
+    if (path === "/favicon.ico") {
+      res.writeHead(204);
+      return res.end();
     }
 
     if (req.method === "GET" && STATIC[path]) {

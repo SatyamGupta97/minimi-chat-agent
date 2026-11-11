@@ -311,3 +311,5 @@ $("#toggle-sidebar").onclick = () => els.sidebar.classList.toggle("open");
 document.querySelectorAll(".suggestions button").forEach((b) => (b.onclick = () => send(b.textContent)));
 
 loadConversations();
+
+window.__appReady = true;
