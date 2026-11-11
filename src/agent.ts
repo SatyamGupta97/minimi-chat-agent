@@ -368,6 +368,9 @@ export function errorMessage(err: unknown): string {
   if (err instanceof ApiError) {
     if (err.status === 400 && /api key/i.test(err.message)) return "Invalid GEMINI_API_KEY.";
     if (err.status === 401 || err.status === 403) return "GEMINI_API_KEY was rejected (invalid key or no access to this model).";
+    if (err.status === 429 && /quota/i.test(err.message)) {
+      return "This Gemini API key has no quota left for this request. Google Search grounding (and Gemini 4) need a billing-enabled project: enable billing for the key's project in Google AI Studio.";
+    }
     if (err.status === 429) return "Rate limited by the Gemini API. Try again in a moment.";
     return `Gemini API error ${err.status}: ${err.message}`;
   }
