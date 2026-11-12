@@ -27,7 +27,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .day { font-size: 12px; color: var(--muted); margin: 12px 8px 2px; }
 .conv { display: block; width: 100%; text-align: left; padding: 6px 8px; border: 0; border-radius: 6px; background: none;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
-.conv:hover, .conv.active { background: var(--chip); }
+.conv-row { display: flex; align-items: center; border-radius: 6px; }
+.conv-row:hover, .conv-row.active { background: var(--chip); }
+.conv-row .conv { flex: 1; min-width: 0; }
+.conv-row .conv:hover { background: none; }
+.conv-del { border: 0; background: none; padding: 2px 8px; font-size: 13px; opacity: 0; cursor: pointer; border-radius: 6px; }
+.conv-row:hover .conv-del, .conv-del:focus-visible { opacity: 0.6; }
+.conv-del:hover { opacity: 1; background: color-mix(in srgb, #c0392b 15%, transparent); }
 
 main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 header { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); }

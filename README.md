@@ -37,6 +37,7 @@ Vendor-specific variables (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KE
 - **Who you are:** facts you state about yourself (name, city, team, preferences) form a profile used in every chat. It's kept current: "I moved to Pune" *replaces* "lives in Delhi", and "forget my budget" removes it.
 - **What you discussed:** the latest exchanges from your other chats, plus past chats related to your message, matched automatically (by meaning and keywords with OpenAI/Gemini; by keywords otherwise).
 - **When:** "what did I ask on 3 November?" or "last Tuesday…" looks up those exact days in your timezone.
+- **Forgetting:** deleting a chat (🗑 in the sidebar) also removes what was learned only from it: its exchanges, their search vectors, and profile facts that came only from that chat.
 
 ## Evaluation status (honest)
 

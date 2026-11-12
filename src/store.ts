@@ -274,9 +274,19 @@ export class Store {
     this.save();
   }
 
-  deleteConversation(id: string): void {
+  /**
+   * Delete a chat and everything memory learned ONLY from it: its turns (with
+   * their extracted facts and embeddings) and profile facts last set by one of
+   * its answers. A fact re-stated in a later chat points at that later turn,
+   * so it survives. Returns what was removed.
+   */
+  deleteConversation(id: string): { turns: number; profileFacts: number } {
+    const turnIds = new Set(this.db.turns.filter((t) => t.conversationId === id).map((t) => t.id));
+    const before = this.db.profile?.length ?? 0;
+    this.db.profile = (this.db.profile ?? []).filter((f) => !f.sourceTurnId || !turnIds.has(f.sourceTurnId));
     this.db.conversations = this.db.conversations.filter((c) => c.id !== id);
     this.db.turns = this.db.turns.filter((t) => t.conversationId !== id);
     this.save();
+    return { turns: turnIds.size, profileFacts: before - this.db.profile.length };
   }
 }

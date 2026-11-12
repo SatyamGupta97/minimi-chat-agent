@@ -249,15 +249,40 @@ async function loadConversations() {
       els.list.append(h);
       lastDay = day;
     }
+    const row = document.createElement("div");
+    row.className = `conv-row${c.id === conversationId ? " active" : ""}`;
     const b = document.createElement("button");
     b.type = "button";
-    b.className = `conv${c.id === conversationId ? " active" : ""}`;
+    b.className = "conv";
     b.textContent = c.title;
     b.title = c.title;
     b.onclick = () => openConversation(c.id);
-    els.list.append(b);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "conv-del";
+    del.textContent = "🗑";
+    del.title = "Delete this chat";
+    del.setAttribute("aria-label", `Delete chat: ${c.title}`);
+    del.onclick = (e) => {
+      e.stopPropagation();
+      deleteConversation(c.id, c.title);
+    };
+    row.append(b, del);
+    els.list.append(row);
     if (c.id === conversationId) els.title.textContent = c.title;
   }
+}
+
+// Deleting a chat also removes what memory learned only from it (see Store.deleteConversation).
+async function deleteConversation(id, title) {
+  if (!confirm(`Delete "${title}"?\n\nThe chat and anything the agent learned only from it will be forgotten. This can't be undone.`)) return;
+  const res = await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+  if (!res.ok) {
+    alert((await res.json().catch(() => ({}))).error ?? `Couldn't delete (HTTP ${res.status}).`);
+    return;
+  }
+  if (id === conversationId) newChat();
+  else loadConversations();
 }
 
 async function openConversation(id) {

@@ -61,3 +61,20 @@ test("v1 memory migrates to v2: unambiguous pairs linked and marked inferred, or
   assert.equal(ex.find((e) => e.question.id === "q1")?.answer?.id, "a1");
   assert.equal(ex.find((e) => e.question.id === "q3")?.answer, undefined);
 });
+
+test("deleting a chat forgets what was learned only from it", () => {
+  const s = new Store(file());
+  const a = s.createConversation(new Date(at), "chat A", "A");
+  const b = s.createConversation(new Date(at), "chat B", "B");
+  const qa = s.addTurn({ conversationId: "A", role: "user", text: "I live in Delhi", at, tz });
+  const ra = s.addTurn({ conversationId: "A", role: "assistant", replyTo: qa.id, status: "completed", text: "ok", at, tz });
+  const qb = s.addTurn({ conversationId: "B", role: "user", text: "My name is Satyam", at, tz });
+  const rb = s.addTurn({ conversationId: "B", role: "assistant", replyTo: qb.id, status: "completed", text: "hi", at, tz });
+  s.applyProfileOps([{ op: "add", text: "The user lives in Delhi." }], at, ra.id);
+  s.applyProfileOps([{ op: "add", text: "The user's name is Satyam." }], at, rb.id);
+  assert.deepEqual(s.deleteConversation(a.id), { turns: 2, profileFacts: 1 });
+  assert.equal(s.getConversation(a.id), undefined);
+  assert.deepEqual(s.allTurns().map((t) => t.conversationId), ["B", "B"]);
+  assert.deepEqual(s.profileFacts().map((f) => f.text), ["The user's name is Satyam."]); // learned in chat B: kept
+  assert.ok(s.getConversation(b.id));
+});

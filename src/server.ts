@@ -111,8 +111,8 @@ const server = createServer(async (req, res) => {
       if (!conv) return json(res, 404, { error: "not found" });
       if (req.method === "GET") return json(res, 200, { ...conv, turns: store.turns(conv.id) });
       if (req.method === "DELETE") {
-        store.deleteConversation(conv.id);
-        return json(res, 200, { ok: true });
+        if (busy.has(conv.id)) return json(res, 409, { error: "This chat is still answering. Stop it first, then delete." });
+        return json(res, 200, { ok: true, removed: store.deleteConversation(conv.id) });
       }
     }
 
