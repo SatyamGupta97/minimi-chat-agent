@@ -65,3 +65,21 @@ test("local-model reasoning before </think> is dropped from the answer", async (
   assert.equal(stripThinking("<think>hmm</think>Answer"), "Answer");
   assert.equal(stripThinking("Plain answer"), "Plain answer");
 });
+
+test("recovery: the pages a model read become numbered sources (opened page beats its snippet)", async () => {
+  const { gatheredSources } = await import("../src/providers/groq.ts");
+  const search = {
+    ...searchPage,
+    search_results: {
+      results: [
+        { title: "Node.js — Node.js 26.13.0 (LTS)", url: "https://nodejs.org/en/blog/release/v26.13.0", content: "Node.js 26.13.0 is the latest LTS.", score: 1 },
+        { title: "Node.js — Download Node.js®", url: "https://nodejs.org/en/download/current/", content: "Download page snippet", score: 1 },
+        { title: "Empty", url: "https://example.com/empty", content: "", score: 0 },
+      ],
+    },
+  };
+  const sources = gatheredSources([search, openedPage] as never);
+  assert.deepEqual(sources.map((s) => s.url), ["https://nodejs.org/en/blog/release/v26.13.0", "https://nodejs.org/en/download/current/"]);
+  assert.match(sources[1].excerpt, /v26\.13\.0 LTS/); // the opened page's text replaced the snippet
+  assert.equal(sources[1].title, "Node.js — Download Node.js®");
+});
