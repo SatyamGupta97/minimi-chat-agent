@@ -216,7 +216,10 @@ async function send(text) {
       }
     }
   } catch (err) {
-    if (err.name !== "AbortError") {
+    if (err.name === "AbortError") {
+      // The server saves the turn as cancelled; the final event never arrives, so label it here.
+      view.meta.textContent = "Stopped";
+    } else {
       const p = document.createElement("div");
       p.className = "error";
       p.textContent = String(err.message ?? err);
