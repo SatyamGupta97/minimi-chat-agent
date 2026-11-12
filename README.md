@@ -38,6 +38,14 @@ Vendor-specific variables (`OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KE
 - **What you discussed:** the latest exchanges from your other chats, plus past chats related to your message, matched automatically (by meaning and keywords with OpenAI/Gemini; by keywords otherwise).
 - **When:** "what did I ask on 3 November?" or "last Tuesday…" looks up those exact days in your timezone.
 
+## Evaluation status (honest)
+
+- **63 offline tests pass** (`npm test`, no key): dates/timezones/DST, memory lookup and recall, profile updates, the meaning-search rule on recorded real Gemini similarities, citation parsing for every vendor, storage migration, key detection.
+- **Live-verified:** Groq (chat + browser search) and Gemini (embeddings), end to end: cross-chat memory, date recall, profile updates, meaning-based recall.
+- **The 5-CRM re-check from a new chat, live on Groq:** memory works (the Monday shortlist and all 5 products are recalled without asking). But gpt-oss at low effort usually searches only 1–2 of the 5 and still asserts "no change" for the rest, even with an explicit checklist in its prompt. So the app enforces it: after every re-check answer it compares the checklist with the searches actually run and appends **"⚠ Not verified in this answer: …"** for anything unsearched. Stronger models are expected to search all five; that's unmeasured.
+- **Not yet live-verified:** the OpenAI, Claude and Gemini *chat* adapters. They're typechecked and unit-tested, but no real request has gone through them (no funded keys during development).
+- **Live eval suite:** partial. 2 of 10 scenarios were recorded before Groq's free-tier daily limit ran out, and later prompt changes made that recording stale, so none is committed. `npm run eval:live` with any funded key records the full suite.
+
 ## Testing: most of it needs no API key
 
 | Command | Needs | What it tests |

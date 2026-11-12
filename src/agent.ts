@@ -3,6 +3,7 @@ import { extractFacts } from "./extract.ts";
 import { lookupMemory } from "./memory-context.ts";
 import { reconcileProfile } from "./profile.ts";
 import { embedMissing, queryVector } from "./semantic.ts";
+import { unverifiedItems } from "./verify.ts";
 import { SYSTEM_PROMPT, turnContext } from "./prompt.ts";
 import type { HistoryItem, Provider, TurnSetup } from "./providers/types.ts";
 import { memoryDigest, recentActivity, userProfile } from "./recall.ts";
@@ -141,7 +142,11 @@ export class Agent {
       if (missing) throw new Error(missing);
       const step = await this.provider.answer(setup, input.signal);
       answer = step.text;
-      if (step.finish === "stop") status = answer.trim() ? "completed" : "incomplete";
+      if (step.finish === "stop") {
+        status = answer.trim() ? "completed" : "incomplete";
+        // Some models occasionally end a turn after searching without writing anything: say so, don't show a blank.
+        if (!answer.trim()) note = "_(The model finished without writing an answer. Please ask again.)_";
+      }
       else if (step.finish === "length") note = "\n\n_(Cut off at the length limit. Ask me to continue.)_";
       else if (step.finish === "blocked" && !answer.trim()) answer = "Sorry, I can't help with that one.";
       else if (step.finish === "other") note = "\n\n_(The answer ended unexpectedly and may be incomplete.)_";
@@ -155,6 +160,11 @@ export class Agent {
       }
     }
 
+    // Verification guard: flag checklist items the answer never searched, whatever it claims about them.
+    const unverified = status === "completed" && this.provider.webSearch ? unverifiedItems(memory.recheck ?? [], searches) : [];
+    if (unverified.length) {
+      note += `\n\n> ⚠ **Not verified in this answer:** ${unverified.join(", ")}. No search was run for ${unverified.length > 1 ? "them" : "it"}, so anything stated about ${unverified.length > 1 ? "them" : "it"} above is unconfirmed. Ask me to check ${unverified.length > 1 ? "them" : "it"}.`;
+    }
     answer += note;
     emit({ type: "final", text: answer });
 
