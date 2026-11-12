@@ -134,3 +134,12 @@ test("real Gemini similarities with only 1–3 past chats: at least 90% of judgm
     }
   assert.ok(right / total >= 0.9, `${right}/${total}`);
 });
+
+test("automatic recall: a greeting with no topic words recalls nothing (live bug: 'hey')", async () => {
+  const s = storeWithChats();
+  await embedMissing(toyProvider(), s);
+  for (const msg of ["hey", "hi!", "thanks"]) {
+    assert.deepEqual(lookupMemory(s, msg, now, tz, opts()).queries, [], msg);
+    assert.deepEqual(lookupMemory(s, msg, now, tz, opts({ model: MODEL, vector: toyVector(msg) })).queries, [], `${msg} (with embeddings)`);
+  }
+});

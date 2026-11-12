@@ -207,8 +207,9 @@ export function recall(
     entries.forEach(([e], i) => ok[i] && byMeaning.add(e));
   }
   // Topic-only searches: keep what matches by keywords (on what it's about) OR by meaning.
-  // A message with no topic words at all ("what did I ask you?") filters nothing: newest first.
-  if (!q.from && !q.to && qTerms.length) {
+  // An EXPLICIT lookup with no topic words ("what did I ask you?") filters nothing: newest first.
+  // Automatic recall (minAboutTerms set) always needs a real match: "hey" must recall nothing.
+  if (!q.from && !q.to && (qTerms.length || opts.minAboutTerms !== undefined)) {
     scored = scored.filter((s) => (s.score > 0 && s.about >= (opts.minAboutTerms ?? 0)) || byMeaning.has(s.e));
   }
   // Hybrid rank: keyword relevance plus a strong weight on meaning.
